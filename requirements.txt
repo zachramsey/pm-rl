@@ -1,0 +1,14 @@
+beautifulsoup4==4.12.3
+einops==0.8.0
+matplotlib==3.10.0
+numpy==2.2.2
+pandas==2.2.3
+pandas_market_calendars==4.5.1
+platformdirs==4.3.6
+pyrate_limiter==3.7.0
+PyYAML==6.0.2
+Requests==2.32.3
+requests_cache==1.2.1
+requests_ratelimiter==0.7.0
+torch==2.5.1
+yfinance==0.2.51
