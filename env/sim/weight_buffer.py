@@ -1,12 +1,11 @@
+from config.base import WINDOW_SIZE, NUM_ASSETS
+
 import torch
 
 class ActionBuffer:
-    def __init__(self, cfg):
+    def __init__(self):
         """ Initialize the action buffer """
-        self.window = cfg["window_size"]
-        self.act_dim = cfg["asset_dim"]
-
-        self.buffer = torch.zeros((self.window, self.act_dim))  # Buffer to store actions
+        self.buffer = torch.zeros((WINDOW_SIZE, NUM_ASSETS))  # Buffer to store actions
         self.buffer[0, 0] = 1                                   # Init first action as all cash
         self.idx = 1                                            # Pointer to curr position in the buffer
         self.is_full = False                                    # Track if the buffer is full
@@ -16,11 +15,11 @@ class ActionBuffer:
         Args:
             action (torch.Tensor): A tensor of shape (act_dim,) representing the action.
         """
-        if action.shape != (self.act_dim,):
-            raise ValueError(f"Action must have shape ({self.act_dim},), got {action.shape}")
+        if action.shape != (NUM_ASSETS,):
+            raise ValueError(f"Action must have shape ({NUM_ASSETS},), got {action.shape}")
         
         self.buffer[self.idx] = action              # Insert action at the current buffer position
-        self.idx = (self.idx + 1) % self.window     # Increment the buffer pointer
+        self.idx = (self.idx + 1) % WINDOW_SIZE     # Increment the buffer pointer
         
         # Mark buffer as full after the first full cycle
         if self.idx == 0:
@@ -28,7 +27,7 @@ class ActionBuffer:
 
     def get_last(self):
         """ Retrieve the last action from the buffer """
-        return self.buffer[(self.idx - 1) % self.window]
+        return self.buffer[(self.idx - 1) % WINDOW_SIZE]
 
     def get_all(self):
         """ Retrieve the buffer in shape (act_dim, window_size) with the most recent actions
@@ -39,14 +38,14 @@ class ActionBuffer:
         if self.is_full:
             buffer = self.buffer
         else:
-            padding = torch.zeros((self.window - self.idx, self.act_dim))
+            padding = torch.zeros((WINDOW_SIZE - self.idx, NUM_ASSETS))
             buffer = torch.cat((padding, self.buffer[:self.idx]), dim=0)
 
         return buffer.T
 
     def reset(self):
         """ Reset the buffer to the initial state """
-        self.buffer = torch.zeros((self.window, self.act_dim))
+        self.buffer = torch.zeros((WINDOW_SIZE, NUM_ASSETS))
         self.buffer[0, 0] = 1
         self.idx = 1
         self.is_full = False

@@ -1,7 +1,6 @@
 '''
 Derived from: github.com/Jingliang-Duan/DSAC-v2/blob/main/dsac_v2.py
 '''
-
 import os
 from copy import deepcopy
 
@@ -10,30 +9,21 @@ import torch.nn as nn
 from torch.optim import Adam
 from torch.distributions import Normal
 
-# from agent.value import Critic
-# from agent.policy import Actor
-from agent.value import LSRE_CANN_Critic as Critic
-from agent.policy import LSRE_CANN_Actor as Actor
-from utils.distributions import TanhGaussDistribution
+from config.base import BATCH_SIZE, NUM_ASSETS, LOG_DIR
+from config.dsac import GAMMA, TAU, TAU_B, DELAY_UPDATE, CLIPPING_RANGE, GRAD_BIAS, STD_BIAS, ACTOR_LR, CRITIC_LR, ALPHA_LR
+
+from distr.tanh_gauss import TanhGaussDistribution
+# from agent.dsac.value import Critic
+# from agent.dsac.policy import Actor
+from agent.dsac.value import LSRE_CANN_Critic as Critic
+from agent.dsac.policy import LSRE_CANN_Actor as Actor
 
 class DSAC:
-    def __init__(self, cfg):
-        self.batch_size = cfg["batch_size"]         # Batch size
-        self.asset_dim = cfg["asset_dim"]           # Number of assets
-
-        self.gamma = cfg["gamma"]                   # Discount factor
-        self.tau = cfg["tau"]                       # Target smoothing coefficient
-        self.target_entropy = -cfg["asset_dim"]     # Target entropy
-        self.delay_update = cfg["delay_update"]     # Policy update interval
-        self.tau_b = cfg.get("tau_b", self.tau)     # Clipping boundary & gradient scalar smoothing coefficient
-        self.zeta = cfg["clipping_range"]           # Clipping range
-        self.grad_bias = cfg["grad_bias"]           # Avoid grad disapearance in gradient scalar term
-        self.std_bias = cfg["std_bias"]             # Avoid gradient explosion in q_std term
-
+    def __init__(self, feat_dim):
         # Networks (Q1, Q2, Pi)
-        self.critic1 = Critic(cfg)
-        self.critic2 = Critic(cfg)
-        self.actor = Actor(cfg)
+        self.critic1 = Critic(feat_dim)
+        self.critic2 = Critic(feat_dim)
+        self.actor = Actor(feat_dim)
 
         # Target Networks
         self.critic1_target = deepcopy(self.critic1)
@@ -47,12 +37,13 @@ class DSAC:
 
         # Parameterized policy entropy temperature (Alpha)
         self.log_alpha = nn.Parameter(torch.tensor(1, dtype=torch.float32))
+        self.entropy_target = -NUM_ASSETS
 
         # Optimizers
-        self.critic1_opt = Adam(self.critic1.parameters(), lr=cfg["critic_lr"])
-        self.critic2_opt = Adam(self.critic2.parameters(), lr=cfg["critic_lr"])
-        self.actor_opt = Adam(self.actor.parameters(), lr=cfg["actor_lr"])
-        self.alpha_opt = Adam([self.log_alpha], lr=cfg["temperature_lr"])
+        self.critic1_opt = Adam(self.critic1.parameters(), lr=CRITIC_LR)
+        self.critic2_opt = Adam(self.critic2.parameters(), lr=CRITIC_LR)
+        self.actor_opt = Adam(self.actor.parameters(), lr=ACTOR_LR)
+        self.alpha_opt = Adam([self.log_alpha], lr=ALPHA_LR)
 
         # Moving Averages
         self.q1_std_bound = 0.0
@@ -92,7 +83,7 @@ class DSAC:
 
     def act(self, s, is_random=False, is_deterministic=False):
         if is_random:
-            act = torch.randn(self.asset_dim, 1)
+            act = torch.randn(NUM_ASSETS, 1)
         else:
             act, std = self.actor(s)
             act_dist = TanhGaussDistribution(act, std)
@@ -106,11 +97,11 @@ class DSAC:
         q2, q2_std = self.critic2(s, a)
 
         # Calculate clipping bounds and gradient scalars
-        self.q1_std_bound = self.tau_b * self.zeta * torch.mean(q1_std.detach()) + (1 - self.tau_b) * self.q1_std_bound
-        self.q2_std_bound = self.tau_b * self.zeta * torch.mean(q2_std.detach()) + (1 - self.tau_b) * self.q2_std_bound
+        self.q1_std_bound = TAU_B * CLIPPING_RANGE * torch.mean(q1_std.detach()) + (1 - TAU_B) * self.q1_std_bound
+        self.q2_std_bound = TAU_B * CLIPPING_RANGE * torch.mean(q2_std.detach()) + (1 - TAU_B) * self.q2_std_bound
         
-        self.q1_grad_scalar = self.tau_b * torch.mean(torch.pow(q1_std.detach(), 2)) + (1 - self.tau_b) * self.q1_grad_scalar
-        self.q2_grad_scalar = self.tau_b * torch.mean(torch.pow(q2_std.detach(), 2)) + (1 - self.tau_b) * self.q2_grad_scalar
+        self.q1_grad_scalar = TAU_B * torch.mean(torch.pow(q1_std.detach(), 2)) + (1 - TAU_B) * self.q1_grad_scalar
+        self.q2_grad_scalar = TAU_B * torch.mean(torch.pow(q2_std.detach(), 2)) + (1 - TAU_B) * self.q2_grad_scalar
 
         # Get action for next state from target policy
         logits_next_mean, logits_next_std = self.actor_target(s_next)
@@ -127,31 +118,31 @@ class DSAC:
         alpha = torch.exp(self.log_alpha)
 
         # Target Q-value
-        q_targ = (r + self.gamma * (q_next - alpha * log_prob_a_next)).detach()
+        q_targ = (r + GAMMA * (q_next - alpha * log_prob_a_next)).detach()
 
         # Target returns
         z = Normal(q_next, torch.pow(q_next_std, 2)).sample()
-        ret_targ = (r + self.gamma * (z - alpha * log_prob_a_next)).detach()
+        ret_targ = (r + GAMMA * (z - alpha * log_prob_a_next)).detach()
 
         # Critic 1 Loss
         std_detach = torch.clamp(q1_std, min=0.0).detach()
-        grad_mean = -((q_targ - q1).detach() / (torch.pow(std_detach, 2) + self.std_bias)) * q1
+        grad_mean = -((q_targ - q1).detach() / (torch.pow(std_detach, 2) + STD_BIAS)) * q1
         
         ret_targ_bound = torch.clamp(ret_targ, q1-self.q1_std_bound, q1+self.q1_std_bound).detach()
         grad_std = -((torch.pow(q1.detach() - ret_targ_bound, 2) - torch.pow(std_detach, 2)) 
-                    /(torch.pow(std_detach, 3) + self.std_bias)) * q1_std
+                    /(torch.pow(std_detach, 3) + STD_BIAS)) * q1_std
         
-        q1_loss = (self.q1_grad_scalar + self.grad_bias) * torch.mean(grad_mean + grad_std)
+        q1_loss = (self.q1_grad_scalar + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
 
         # Critic 2 Loss
         std_detach = torch.clamp(q2_std, min=0.0).detach()
-        grad_mean = -((q_targ - q2).detach() / (torch.pow(std_detach, 2) + self.std_bias)) * q2
+        grad_mean = -((q_targ - q2).detach() / (torch.pow(std_detach, 2) + STD_BIAS)) * q2
         
         ret_targ_bound = torch.clamp(ret_targ, q2-self.q2_std_bound, q2+self.q2_std_bound).detach()
         grad_std = -((torch.pow(q2.detach() - ret_targ_bound, 2) - torch.pow(std_detach, 2)) 
-                    /(torch.pow(std_detach, 3) + self.std_bias)) * q2_std
+                    /(torch.pow(std_detach, 3) + STD_BIAS)) * q2_std
         
-        q2_loss = (self.q2_grad_scalar + self.grad_bias) * torch.mean(grad_mean + grad_std)
+        q2_loss = (self.q2_grad_scalar + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
 
         return (q1_loss+q2_loss, q1_loss.detach(), q2_loss.detach(), 
                 torch.mean(q1.detach()), torch.mean(q2.detach()), 
@@ -175,7 +166,7 @@ class DSAC:
         policy_std = torch.mean(logits_std, dim=0, keepdim=True)
         act_dist = TanhGaussDistribution(policy_mean, policy_std)
         act_new, log_prob_new = act_dist.rsample()
-        act_new = act_new.expand(self.batch_size, -1, -1)
+        act_new = act_new.expand(BATCH_SIZE, -1, -1)
 
         # Update Critic
         self.critic1_opt.zero_grad()#set_to_none=True)
@@ -198,7 +189,7 @@ class DSAC:
 
         # Update temperature
         self.alpha_opt.zero_grad()
-        temperature_loss = -self.log_alpha * torch.mean(log_prob_new.detach() + self.target_entropy)
+        temperature_loss = -self.log_alpha * torch.mean(log_prob_new.detach() + self.entropy_target)
         temperature_loss.backward()
 
         # Optimize critics
@@ -206,13 +197,13 @@ class DSAC:
         self.critic2_opt.step()
 
         # Delayed update
-        if step % self.delay_update == 0:
+        if step % DELAY_UPDATE == 0:
             self.actor_opt.step()       # Optimize actor network
             self.alpha_opt.step()       # Optimize temperature network
 
             # Perform soft update on target networks
             with torch.no_grad():
-                polyak = 1 - self.tau
+                polyak = 1 - TAU
 
                 for p, p_targ in zip(self.critic1.parameters(), self.critic1_target.parameters()):
                     p_targ.data.mul_(polyak)
@@ -243,12 +234,11 @@ class DSAC:
 
     def log_info(self, log_file):
         # Check that logs directory exists
-        log_dir = os.path.dirname(log_file)
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
+        if not os.path.exists(LOG_DIR):
+            os.makedirs(LOG_DIR)
 
         # Write training information to log file
-        with open(log_file, "a") as f:
+        with open(LOG_DIR + "latest.log", "a") as f:
             f.write("="*50 + "\n")
             for key, value in self.info.items():
                 if key == "epoch":

@@ -1,3 +1,5 @@
+from config.base import DATA_DIR
+
 import os
 import sys
 
@@ -11,14 +13,11 @@ from requests_cache import CacheMixin, SQLiteCache
 from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
 from pyrate_limiter import Duration, RequestRate, Limiter
 
-from preprocess.stock_symbols import StockSymbols
-
 class StockData:
-    def __init__(self, symbols: StockSymbols, cfg):
+    def __init__(self, symbols):
         self.symbols = symbols                                      # List of stock symbols
-        self.data_dir = cfg["data_dir"]                             # Directory to store data
-        if not os.path.exists(self.data_dir):                       # Create the directory if it doesn't exist
-            os.makedirs(self.data_dir)
+        if not os.path.exists(DATA_DIR):                       # Create the directory if it doesn't exist
+            os.makedirs(DATA_DIR)
 
         self.i = 0                                                  # Initialize counter
         self.data = {}                                              # Initialize dictionary to store data
@@ -71,7 +70,7 @@ class StockData:
         existing_symbols = []
         new_symbols = []
         for symbol in self.symbols:
-            file_path = os.path.join(self.data_dir, f"{symbol}.csv")
+            file_path = os.path.join(DATA_DIR, f"{symbol}.csv")
             if os.path.exists(file_path):
                 existing_symbols.append((symbol, file_path))
             else:

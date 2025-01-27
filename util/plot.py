@@ -4,22 +4,22 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from datetime import datetime as dt
 
+from config.base import PLOT_DIR, NUM_ASSETS, UPDATE_STEPS
+
 class Visualizer:
-    def __init__(self, agent, env, train_dates, eval_dates, cfg):
+    def __init__(self, agent, env, train_dates, eval_dates):
         self.agent = agent
         self.env = env
         self.train_dates = train_dates
         self.eval_dates = eval_dates
-        self.cfg = cfg
 
 
     def plot_update_info(self):
         lo = lambda x, y: [a - b for a, b in zip(x, y)]
         hi = lambda x, y: [a + b for a, b in zip(x, y)]
 
-        plot_dir = self.cfg["plot_dir"]
-        if not os.path.exists(plot_dir):
-            os.makedirs(plot_dir)
+        if not os.path.exists(PLOT_DIR):
+            os.makedirs(PLOT_DIR)
             
         e, q1, q2, q1_std, q2_std, q1_mean_std, q2_mean_std, \
         q1_loss, q2_loss, critic_loss, actor_loss, entropy, alpha = self.agent.info.values()
@@ -37,13 +37,13 @@ class Visualizer:
         plt.ylabel("Q")
         plt.title("Minimum Q Value and Standard Deviation")
 
-        critic_data = np.reshape(critic_loss, (-1, self.cfg["update_steps"]))
+        critic_data = np.reshape(critic_loss, (-1, UPDATE_STEPS))
         critic_mean = np.mean(critic_data, axis=1)
         critic_std = np.std(critic_data, axis=1)
         # critic_min = np.min(critic_data, axis=1)
         # critic_max = np.max(critic_data, axis=1)
 
-        actor_data = np.reshape(actor_loss, (-1, self.cfg["update_steps"]))
+        actor_data = np.reshape(actor_loss, (-1, UPDATE_STEPS))
         actor_mean = np.mean(actor_data, axis=1)
         actor_std = np.std(actor_data, axis=1)
         # actor_min = np.min(actor_data, axis=1)
@@ -63,7 +63,7 @@ class Visualizer:
         plt.title("Actor & Critic Loss (Avg, Min, & Max per Epoch)")
         plt.legend()
 
-        plt.savefig(plot_dir + "latest.png")
+        plt.savefig(PLOT_DIR + "latest.png")
         plt.close()
 
 
@@ -71,23 +71,20 @@ class Visualizer:
         weights = np.array(self.env.info["actions"])
         values = np.array(self.env.info["values"])
 
-        plot_dir = os.path.join(self.cfg["plot_dir"])
-        if not os.path.exists(plot_dir):
-            os.makedirs(plot_dir)
-
-        symbols = self.cfg["symbols"]  # Stock symbols along the x-axis
+        if not os.path.exists(PLOT_DIR):
+            os.makedirs(PLOT_DIR)
 
         # Setup the figure and axes
         fig, ax = plt.subplots()
-        ax.set_xlim(-0.5, len(symbols) - 0.5)
+        ax.set_xlim(-0.5, NUM_ASSETS - 0.5)
         ax.set_ylim(0, 1, auto=True, emit=True)
-        ax.set_xticks(range(len(symbols)))
-        ax.set_xticklabels(symbols, rotation=90, ha="right")
+        ax.set_xticks(range(NUM_ASSETS))
+        # ax.set_xticklabels(symbols, rotation=90, ha="right")
         ax.set_xlabel("Stock Symbol")
         ax.set_ylabel("Weight")
 
         # Initialize bars and text
-        bars = ax.bar(range(len(symbols)), weights[0], color="b")
+        bars = ax.bar(range(NUM_ASSETS), weights[0], color="b")
         date_text = ax.text(0.05, 0.9, "", transform=ax.transAxes)
         value_text = ax.text(0.05, 0.8, "", transform=ax.transAxes)
 
@@ -100,7 +97,7 @@ class Visualizer:
             return bars, date_text, value_text
 
         ani = FuncAnimation(fig, update, frames=len(self.eval_dates), interval=100, blit=False)
-        ani.save(os.path.join(plot_dir, f"portfolio_{dt.now().strftime("%y-%m-%d_%H-%M-%S")}.mp4"), fps=30)
+        ani.save(os.path.join(PLOT_DIR, f"portfolio_{dt.now().strftime("%y-%m-%d_%H-%M-%S")}.mp4"), fps=30)
 
 
     def plot(self):

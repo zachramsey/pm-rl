@@ -6,7 +6,9 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from srl.attention import AttentionBlock
+from config.base import NUM_ASSETS
+from config.lsre_cann import NUM_LATENTS, LATENT_DIM, NUM_CROSS_HEADS, CROSS_HEAD_DIM, NUM_SELF_HEADS, SELF_HEAD_DIM, DEPTH, DROPOUT
+from agent.lsre_cann.attention import AttentionBlock
 
 # class PositionalEncoding(nn.Module):
 #     def __init__(self, cfg):
@@ -32,27 +34,16 @@ from srl.attention import AttentionBlock
 
 
 class LSRE_Encode(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, feat_dim):
         super().__init__()
-        asset_dim = cfg['asset_dim']                # Number of assets
-        feat_dim = cfg['feat_dim']                         # Number of features
 
-        num_latents = cfg['num_latents']            # Number of latents
-        latent_dim = cfg['latent_dim']              # Dimension of latents
-
-        num_cross_heads = cfg['num_cross_heads']    # Number of cross attention heads
-        cross_head_dim = cfg['cross_head_dim']      # Dimension of cross attention heads
-
-        num_latent_heads = cfg['num_latent_heads']  # Number of self attention heads
-        latent_head_dim = cfg['latent_head_dim']    # Dimension of self attention heads
-
-        self.z = nn.Buffer(torch.randn(asset_dim, num_latents, latent_dim))
-        self.cross_attn = AttentionBlock(num_cross_heads, cross_head_dim, latent_dim, feat_dim)
+        self.z = nn.Buffer(torch.randn(NUM_ASSETS, NUM_LATENTS, LATENT_DIM))
+        self.cross_attn = AttentionBlock(NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM, feat_dim)
         self.self_attns = nn.ModuleList([
-            AttentionBlock(num_latent_heads, latent_head_dim, latent_dim) 
-            for _ in range(cfg['depth'])
+            AttentionBlock(NUM_SELF_HEADS, SELF_HEAD_DIM, LATENT_DIM) 
+            for _ in range(DEPTH)
         ])
-        self.out = nn.Linear(num_latents, 1)
+        self.out = nn.Linear(NUM_LATENTS, 1)
 
     def forward(self, x):
         ''' ### Forward pass of LSRE
@@ -88,14 +79,13 @@ class LSRE_Encode(nn.Module):
 
 
 class CANN_Encode(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self):
         super().__init__()
-        latent_dim = cfg['latent_dim']
-        self.scale = latent_dim ** -0.5
+        self.scale = LATENT_DIM ** -0.5
         
-        self.q_linear = nn.Linear(latent_dim, latent_dim)
-        self.k_linear = nn.Linear(latent_dim, latent_dim)
-        self.v_linear = nn.Linear(latent_dim, latent_dim)
+        self.q_linear = nn.Linear(LATENT_DIM, LATENT_DIM)
+        self.k_linear = nn.Linear(LATENT_DIM, LATENT_DIM)
+        self.v_linear = nn.Linear(LATENT_DIM, LATENT_DIM)
 
     def forward(self, z):
         ''' ### Forward pass of CANN
@@ -119,13 +109,13 @@ class CANN_Encode(nn.Module):
 
 
 class LSRE_CANN(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, feat_dim):
         super().__init__()
         # self.pos_enc = PositionalEncoding(cfg)
         # self.pos_emb = nn.Embedding(cfg["window_size"], cfg["feat_dim"])  #NOTE Original implementation
-        self.lsre = LSRE_Encode(cfg)
-        self.dropout = nn.Dropout(cfg["dropout"])
-        self.cann = CANN_Encode(cfg)
+        self.lsre = LSRE_Encode(feat_dim)
+        self.dropout = nn.Dropout(DROPOUT)
+        self.cann = CANN_Encode()
 
     def forward(self, x):
         ''' ### Forward pass of LSRE_CANN

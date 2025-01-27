@@ -1,9 +1,11 @@
 
 import numpy as np
 
+from config.base import LOG_DIR
+
 class Metrics:
-    def __init__(self, env, cfg):
-        self.log_file = cfg["log_dir"] + "latest.log"
+    def __init__(self, env):
+        self.log_file = LOG_DIR + "latest.log"
         self.env = env
 
     def sharpe(self):

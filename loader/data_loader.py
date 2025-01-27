@@ -1,12 +1,11 @@
 import os
-import sys
 import pandas as pd
-import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from preprocess.stock_symbols import StockSymbols
-from preprocess.stock_data import StockData
+from config.base import DEBUG, PICKLE_DIR, MIN_VOLUME, TRAIN_RATIO, WINDOW_SIZE, NUM_ASSETS
+from loader.stock_symbols import StockSymbols
+from loader.stock_data import StockData
 
 # ==================================================================================================
 class StockDataset(Dataset):
@@ -35,9 +34,7 @@ class StockDataset(Dataset):
 
 # ==================================================================================================
 class StockDataLoader:
-    def __init__(self, cfg):
-        self.cfg = cfg
-
+    def __init__(self):
         self.symbols = None         # Symbol data class
         self.data = None            # Stock data class
 
@@ -49,26 +46,20 @@ class StockDataLoader:
         self.eval_dataloader = None
 
         # Retrieve the data
-        if cfg["debug"] and os.path.exists(cfg["pickle_dir"]):
+        if DEBUG and os.path.exists(PICKLE_DIR):
             self.load_data()
         else:
             self.fetch_data()
 
         self._create_dataloaders()   # Create the data loaders
-
-    def get_train_data(self):
-        return self.train_dataloader
-    
-    def get_eval_data(self):
-        return self.eval_dataloader
             
     def load_data(self):
         '''Load local pickled data'''
         print(f'{"-"*50}\nLoading Pickled Data...', end='\r')
-        self.symbols = pd.read_pickle(self.cfg["pickle_dir"]+"symbols.pkl")
-        self.dates = pd.read_pickle(self.cfg["pickle_dir"]+"dates.pkl")
-        self.features = pd.read_pickle(self.cfg["pickle_dir"]+"features.pkl")
-        self.targets = pd.read_pickle(self.cfg["pickle_dir"]+"targets.pkl")
+        self.symbols = pd.read_pickle(PICKLE_DIR + "symbols.pkl")
+        self.dates = pd.read_pickle(PICKLE_DIR + "dates.pkl")
+        self.features = pd.read_pickle(PICKLE_DIR + "features.pkl")
+        self.targets = pd.read_pickle(PICKLE_DIR + "targets.pkl")
         print(f'Loading Pickled Data... Done!\n{"-"*50}')
 
     def fetch_data(self):
@@ -78,7 +69,7 @@ class StockDataLoader:
         print(f'Fetching Stock Symbols... Done!\n{"-"*50}')
 
         print(f'{"Fetching Historical Data: ":<25}', end='\r')
-        self.data = StockData(self.symbols, self.cfg)
+        self.data = StockData(self.symbols)
         print(f'\n{"-"*50}\nFetching Historical Data... Done!\n{"-"*50}')
 
         print(f'{"Preparing Features: ":<25}', end='\r')
@@ -89,13 +80,13 @@ class StockDataLoader:
         self._initialize_tensors()
         print(f'Done!\n{"-"*120}')
 
-        if self.cfg["debug"] and not os.path.exists(self.cfg["pickle_dir"]):
-            os.makedirs(self.cfg["pickle_dir"])
+        if DEBUG and not os.path.exists(PICKLE_DIR):
+            os.makedirs(PICKLE_DIR) 
             print(f'{"Saving Pickled Data...":<25}', end='\r')
-            pd.to_pickle(self.symbols, self.cfg["pickle_dir"]+"symbols.pkl")
-            pd.to_pickle(self.dates, self.cfg["pickle_dir"]+"dates.pkl")
-            pd.to_pickle(self.features, self.cfg["pickle_dir"]+"features.pkl")
-            pd.to_pickle(self.targets, self.cfg["pickle_dir"]+"targets.pkl")
+            pd.to_pickle(self.symbols, PICKLE_DIR + "symbols.pkl")
+            pd.to_pickle(self.dates, PICKLE_DIR + "dates.pkl")
+            pd.to_pickle(self.features, PICKLE_DIR + "features.pkl")
+            pd.to_pickle(self.targets, PICKLE_DIR + "targets.pkl")
             print(f'Saving Pickled Data... Done!\n{"-"*50}')
 
     def _clip_zero_volume(self):
@@ -108,13 +99,13 @@ class StockDataLoader:
     def _validate_symbols(self):
         '''Validate symbols based on minimum volume criteria and data length'''
         # Filter out symbols with insufficient volume
-        suff_vol_symbols = [symbol for symbol in self.symbols if self.data[symbol]['Volume'].mean() > self.cfg["min_volume"]]
+        suff_vol_symbols = [symbol for symbol in self.symbols if self.data[symbol]['Volume'].mean() > MIN_VOLUME]
         self.symbols.audit(suff_vol_symbols)
 
         # Choose symbols with top data length
         symbols_by_length = [(symbol, len(self.data[symbol])) for symbol in self.symbols]
         sorted_symbols = sorted(symbols_by_length, key=lambda x: x[1])
-        suff_len_symbols = [symbol for symbol, _ in sorted_symbols[-(self.cfg["asset_dim"]-1):]]
+        suff_len_symbols = [symbol for symbol, _ in sorted_symbols[-(NUM_ASSETS-1):]]
         self.symbols.audit(suff_len_symbols)
 
         # Update the data to only include the chosen symbols
@@ -159,7 +150,7 @@ class StockDataLoader:
 
     def _create_dataloaders(self):
         '''Create the data loaders for training and testing'''
-        start_eval = int(len(self.dates) * self.cfg["train_ratio"])
+        start_eval = int(len(self.dates) * TRAIN_RATIO)
 
         # Slice the data into training and testing sets
         train_dates = self.dates[:start_eval]
@@ -171,14 +162,34 @@ class StockDataLoader:
         eval_targets = self.targets[:, start_eval:]
 
         # Create the data loaders
-        train_dataset = StockDataset(train_dates, train_features, train_targets, self.cfg["window_size"])
+        train_dataset = StockDataset(train_dates, train_features, train_targets, WINDOW_SIZE)
         self.train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False)
-        eval_dataset = StockDataset(eval_dates, eval_features, eval_targets, self.cfg["window_size"])
+        eval_dataset = StockDataset(eval_dates, eval_features, eval_targets, WINDOW_SIZE)
         self.eval_dataloader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
 
-        # Save values to the config
-        self.cfg["symbols"] = ['$'] + list(self.symbols.data.keys())
-        self.cfg["train_len"] = len(train_dataset)
-        self.cfg["eval_len"] = len(eval_dataset)
-        self.cfg["asset_dim"] = self.features.size(0)
-        self.cfg["feat_dim"] = self.features.size(2)
+    def get_train_data(self):
+        return self.train_dataloader
+    
+    def get_eval_data(self):
+        return self.eval_dataloader
+    
+    def get_train_len(self):
+        return len(self.train_dataloader.dataset)
+    
+    def get_eval_len(self):
+        return len(self.eval_dataloader.dataset)
+    
+    def get_train_dates(self):
+        return self.train_dataloader.dataset.dates
+    
+    def get_eval_dates(self):
+        return self.eval_dataloader.dataset.dates
+    
+    def get_assets(self):
+        return ['$'] + list(self.symbols.data.keys())
+    
+    def get_num_assets(self):
+        return self.features.size(0)
+    
+    def get_num_features(self):
+        return self.features.size(2)

@@ -1,16 +1,12 @@
+from config.base import INITIAL_CASH, NUM_INVESTED, BUY_PENALTY, SELL_PENALTY
+
 import torch
-from env.weight_buffer import ActionBuffer
+from env.sim.weight_buffer import ActionBuffer
 
 class TradingEnv:
-    def __init__(self, cfg):
-        self.init_cash = cfg["init_cash"]
-        self.c_sell = cfg["sell_cost"]
-        self.c_buy = cfg["purchase_cost"]
-
-        self.num_invested = cfg["num_invested"]
-
-        self.value = self.init_cash         # Initialize the portfolio value
-        self.weights = ActionBuffer(cfg)    # Buffer for storing the weights
+    def __init__(self):
+        self.value = INITIAL_CASH         # Initialize the portfolio value
+        self.weights = ActionBuffer()    # Buffer for storing the weights
 
         self.info = {
             "actions": [],
@@ -27,7 +23,7 @@ class TradingEnv:
         Returns:
             features (torch.Tensor): Updated features for the first day
         """
-        self.value = self.init_cash     # Reset the portfolio value
+        self.value = INITIAL_CASH     # Reset the portfolio value
         self.weights.reset()            # Reset the weights buffer
 
         self.info = {
@@ -53,12 +49,12 @@ class TradingEnv:
             float: Transaction remainder factor
         """
         mu0 = torch.tensor(1.0, device=w.device)
-        mu1 = torch.tensor(1.0 - self.c_sell - self.c_buy + self.c_sell * self.c_buy, device=w.device)
+        mu1 = torch.tensor(1.0 - SELL_PENALTY - BUY_PENALTY + SELL_PENALTY * BUY_PENALTY, device=w.device)
 
         while torch.abs(mu1 - mu0) > 1e-10:
             mu0 = mu1
-            denom = 1 - self.c_buy * w_targ[0]
-            coeff = 1 - (self.c_buy * w[0]) - (self.c_sell + self.c_buy - (self.c_sell * self.c_buy))
+            denom = 1 - BUY_PENALTY * w_targ[0]
+            coeff = 1 - (BUY_PENALTY * w[0]) - (SELL_PENALTY + BUY_PENALTY - (SELL_PENALTY * BUY_PENALTY))
             mu1 = (coeff * torch.sum(torch.maximum(w[1:] - mu1 * w_targ[1:], torch.tensor(0.0, device=w.device)))) / denom
 
         return mu1.item()
@@ -79,7 +75,7 @@ class TradingEnv:
         action = action + torch.min(action)
 
         # Keep top k weights and set the rest to zero
-        min_topk = torch.topk(action, self.num_invested).values[-1]
+        min_topk = torch.topk(action, NUM_INVESTED).values[-1]
         action = torch.where(action >= min_topk, action, torch.tensor(0.0, device=action.device))
 
         # # Set all weights below 0.5 to zero

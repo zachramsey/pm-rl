@@ -1,49 +1,44 @@
-
 import torch
 import torch.nn as nn
 
-class Actor(nn.Module):
-    def __init__(self, cfg):
-        super(Actor, self).__init__()
-        self.min_log_std = cfg["min_log_std"]
-        self.max_log_std = cfg["max_log_std"]
+from config.dsac import MIN_LOG_STD, MAX_LOG_STD
 
-        self.input = nn.Sequential(nn.Linear(cfg["latent_dim"], 256), nn.GELU())
-        self.hidden1 = nn.Sequential(nn.Linear(256, 256), nn.GELU())
-        self.hidden2 = nn.Sequential(nn.Linear(256, 256), nn.GELU())
-        self.hidden3 = nn.Sequential(nn.Linear(256, 256), nn.GELU())
-        self.output1 = nn.Sequential(nn.Linear(256, 2))
+# class Actor(nn.Module):
+#     def __init__(self, input_dim):
+#         super(Actor, self).__init__()
+#         self.lsre_cann = LSRE_CANN(input_dim)
+#         self.input = nn.Sequential(nn.Linear(input_dim, 256), nn.GELU())
+#         self.hidden = nn.Sequential(nn.Linear(256, 256), nn.GELU())
+#         self.output = nn.Sequential(nn.Linear(256, 2))
 
-    def forward(self, s):
-        ''' ### Forward pass of Actor
-        Args:
-            s (torch.Tensor): State tensor of shape (batch_dim, asset_dim, latent_dim)
-        Returns:
-            mu (torch.Tensor): Mean tensor of shape (batch_dim, asset_dim, 1)
-            std (torch.Tensor): Standard deviation tensor of shape (batch_dim, asset_dim, 1)
-        '''
-        x = self.input(s)
-        x = self.hidden1(x)
-        x = self.hidden2(x)
-        x = self.hidden3(x)
-        x = self.output1(x)
-        mu, log_std = torch.chunk(x, chunks=2, dim=-1)
-        std = torch.exp(torch.clamp(log_std, self.min_log_std, self.max_log_std))
-        return mu, std
+#     def forward(self, s):
+#         ''' ### Forward pass of Actor
+#         Args:
+#             s (torch.Tensor): State tensor of shape (batch_dim, asset_dim, window_size, feature_dim)
+#         Returns:
+#             mu (torch.Tensor): Mean tensor of shape (batch_dim, asset_dim, 1)
+#             std (torch.Tensor): Standard deviation tensor of shape (batch_dim, asset_dim, 1)
+#         '''
+#         x = self.attn(s)
+#         x = x[:, -1, :]
+#         x = self.input(x)
+#         x = self.hidden(x)
+#         x = self.output(x)
+#         mu, log_std = torch.chunk(x, chunks=2, dim=-1)
+#         std = torch.exp(torch.clamp(log_std, MIN_LOG_STD, MAX_LOG_STD))
+#         return mu, std
     
 #--------------------------------------------------------------------------------------------------------------
 
-from srl.lsre_cann import LSRE_CANN
+from config.dsac import MIN_LOG_STD, MAX_LOG_STD
+from config.lsre_cann import LATENT_DIM
+from agent.lsre_cann.lsre_cann import LSRE_CANN
 
 class LSRE_CANN_Actor(nn.Module):
     def __init__(self, cfg):
         super(LSRE_CANN_Actor, self).__init__()
-        
-        self.min_log_std = cfg["min_log_std"]
-        self.max_log_std = cfg["max_log_std"]
-        
         self.repr = LSRE_CANN(cfg)
-        self.out = nn.Linear(cfg["latent_dim"], 2)
+        self.out = nn.Linear(LATENT_DIM, 2)
 
     def forward(self, s):
         ''' ### Forward pass of Actor
@@ -60,6 +55,6 @@ class LSRE_CANN_Actor(nn.Module):
         x = self.out(x)
 
         mu, log_std = torch.chunk(x, chunks=2, dim=-1)
-        std = torch.exp(torch.clamp(log_std, self.min_log_std, self.max_log_std))
+        std = torch.exp(torch.clamp(log_std, MIN_LOG_STD, MAX_LOG_STD))
 
         return mu, std
