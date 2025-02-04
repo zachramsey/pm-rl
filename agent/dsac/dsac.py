@@ -13,6 +13,7 @@ from config.base import BATCH_SIZE, NUM_ASSETS, LOG_DIR
 from config.dsac import GAMMA, TAU, TAU_B, DELAY_UPDATE, CLIPPING_RANGE, GRAD_BIAS, STD_BIAS, ACTOR_LR, CRITIC_LR, ALPHA_LR
 
 from distr.tanh_gauss import TanhGaussDistribution
+from distr.gauss import GaussDistribution
 # from agent.dsac.value import Critic
 # from agent.dsac.policy import Actor
 from agent.dsac.value import LSRE_CANN_Critic as Critic
@@ -46,10 +47,8 @@ class DSAC:
         self.alpha_opt = Adam([self.log_alpha], lr=ALPHA_LR)
 
         # Moving Averages
-        self.q1_std_bound = 0.0
-        self.q2_std_bound = 0.0
-        self.q1_grad_scalar = 0.0
-        self.q2_grad_scalar = 0.0
+        self.ema_std1 = -1.0
+        self.ema_std2 = -1.0
 
         # Collect training information
         self.info = {
@@ -86,7 +85,7 @@ class DSAC:
             act = torch.randn(NUM_ASSETS, 1)
         else:
             act, std = self.actor(s)
-            act_dist = TanhGaussDistribution(act, std)
+            act_dist = GaussDistribution(act, std)
             act = act_dist.mode() if is_deterministic else act_dist.sample()[0]
         return act.detach()
     
@@ -97,52 +96,60 @@ class DSAC:
         q2, q2_std = self.critic2(s, a)
 
         # Calculate clipping bounds and gradient scalars
-        self.q1_std_bound = TAU_B * CLIPPING_RANGE * torch.mean(q1_std.detach()) + (1 - TAU_B) * self.q1_std_bound
-        self.q2_std_bound = TAU_B * CLIPPING_RANGE * torch.mean(q2_std.detach()) + (1 - TAU_B) * self.q2_std_bound
-        
-        self.q1_grad_scalar = TAU_B * torch.mean(torch.pow(q1_std.detach(), 2)) + (1 - TAU_B) * self.q1_grad_scalar
-        self.q2_grad_scalar = TAU_B * torch.mean(torch.pow(q2_std.detach(), 2)) + (1 - TAU_B) * self.q2_grad_scalar
+        if self.ema_std1 == -1.0: self.ema_std1 = torch.mean(q1_std.detach())
+        else: self.ema_std1 = (1 - TAU_B) * self.ema_std1 + TAU_B * torch.mean(q1_std.detach())
+
+        if self.ema_std2 == -1.0: self.ema_std2 = torch.mean(q2_std.detach())
+        else: self.ema_std2 = (1 - TAU_B) * self.ema_std2 + TAU_B * torch.mean(q2_std.detach())
 
         # Get action for next state from target policy
         logits_next_mean, logits_next_std = self.actor_target(s_next)
-        act_dist = TanhGaussDistribution(logits_next_mean, logits_next_std)
+        act_dist = GaussDistribution(logits_next_mean, logits_next_std)
         a_next, log_prob_a_next = act_dist.rsample()
 
         # Determine minimum Q-value function
         q1_next, q1_next_std = self.critic1_target(s_next, a_next)
+        z = Normal(torch.zeros_like(q1_next), torch.ones_like(q1_next_std)).sample()
+        z = torch.clamp(z, -CLIPPING_RANGE, CLIPPING_RANGE)
+        q1_next_sample = q1_next + torch.mul(z, q1_next_std)
+
         q2_next, q2_next_std = self.critic2_target(s_next, a_next)
-        q_next = torch.min(q1_next, q2_next)
-        q_next_std = torch.where(q1_next > q2_next, q1_next_std, q2_next_std)
+        z = Normal(torch.zeros_like(q2_next), torch.ones_like(q2_next_std)).sample()
+        z = torch.clamp(z, -CLIPPING_RANGE, CLIPPING_RANGE)
+        q2_next_sample = q2_next + torch.mul(z, q2_next_std)
+
+        q_next = torch.min(q1_next_sample, q2_next_sample)
+        q_next_sample = torch.where(q1_next < q2_next, q1_next_sample, q2_next_sample)
 
         # Entropy temperature
-        alpha = torch.exp(self.log_alpha)
+        alpha = torch.exp(self.log_alpha).item()
 
-        # Target Q-value
-        q_targ = (r + GAMMA * (q_next - alpha * log_prob_a_next)).detach()
+        # Target Q-values
+        q1_targ = (r + GAMMA * (q_next.detach() - alpha * log_prob_a_next))
+        q1_targ_sample = (r + GAMMA * (q_next_sample.detach() - alpha * log_prob_a_next.detach()))
+        td_bound1 = CLIPPING_RANGE * self.ema_std1.detach()
+        q1_targ_bound = q1.detach() + torch.clamp(q1_targ_sample - q1.detach(), -td_bound1, td_bound1)
 
-        # Target returns
-        z = Normal(q_next, torch.pow(q_next_std, 2)).sample()
-        ret_targ = (r + GAMMA * (z - alpha * log_prob_a_next)).detach()
+        q2_targ = (r + GAMMA * (q_next.detach() - alpha * log_prob_a_next))
+        q2_targ_sample = (r + GAMMA * (q_next_sample.detach() - alpha * log_prob_a_next.detach()))
+        td_bound2 = CLIPPING_RANGE * self.ema_std2.detach()
+        q2_targ_bound = q2.detach() + torch.clamp(q2_targ_sample - q2.detach(), -td_bound2, td_bound2)
+
+        # Lower bounded standard deviations
+        q1_std_detach = torch.clamp(q1_std, min=0.0).detach()
+        q2_std_detach = torch.clamp(q2_std, min=0.0).detach()
 
         # Critic 1 Loss
-        std_detach = torch.clamp(q1_std, min=0.0).detach()
-        grad_mean = -((q_targ - q1).detach() / (torch.pow(std_detach, 2) + STD_BIAS)) * q1
-        
-        ret_targ_bound = torch.clamp(ret_targ, q1-self.q1_std_bound, q1+self.q1_std_bound).detach()
-        grad_std = -((torch.pow(q1.detach() - ret_targ_bound, 2) - torch.pow(std_detach, 2)) 
-                    /(torch.pow(std_detach, 3) + STD_BIAS)) * q1_std
-        
-        q1_loss = (self.q1_grad_scalar + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
+        grad_mean = -((q1_targ.detach() - q1).detach() / (torch.pow(q1_std_detach, 2) + STD_BIAS)) * q1
+        grad_std = -((torch.pow(q1.detach() - q1_targ_bound.detach(), 2) - torch.pow(q1_std_detach, 2)) 
+                    /(torch.pow(q1_std_detach, 3) + STD_BIAS)) * q1_std
+        q1_loss = (torch.pow(self.ema_std1, 2) + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
 
         # Critic 2 Loss
-        std_detach = torch.clamp(q2_std, min=0.0).detach()
-        grad_mean = -((q_targ - q2).detach() / (torch.pow(std_detach, 2) + STD_BIAS)) * q2
-        
-        ret_targ_bound = torch.clamp(ret_targ, q2-self.q2_std_bound, q2+self.q2_std_bound).detach()
-        grad_std = -((torch.pow(q2.detach() - ret_targ_bound, 2) - torch.pow(std_detach, 2)) 
-                    /(torch.pow(std_detach, 3) + STD_BIAS)) * q2_std
-        
-        q2_loss = (self.q2_grad_scalar + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
+        grad_mean = -((q2_targ.detach() - q2).detach() / (torch.pow(q2_std_detach, 2) + STD_BIAS)) * q2
+        grad_std = -((torch.pow(q2.detach() - q2_targ_bound.detach(), 2) - torch.pow(q2_std_detach, 2)) 
+                    /(torch.pow(q2_std_detach, 3) + STD_BIAS)) * q2_std
+        q2_loss = (torch.pow(self.ema_std2, 2) + GRAD_BIAS) * torch.mean(grad_mean + grad_std)
 
         return (q1_loss+q2_loss, q1_loss.detach(), q2_loss.detach(), 
                 torch.mean(q1.detach()), torch.mean(q2.detach()), 
@@ -154,7 +161,8 @@ class DSAC:
         q2, std2 = self.critic2(s, act_new)
         q_min = torch.min(q1, q2)
         std_min = torch.where(q1 < q2, std1, std2)
-        policy_loss = torch.mean(torch.exp(self.log_alpha) * log_prob_new - (q_min / std_min))
+        policy_loss = torch.mean(torch.exp(self.log_alpha).item() * log_prob_new - (q_min / std_min))
+        # policy_loss = torch.mean(torch.exp(self.log_alpha).item() * log_prob_new - torch.min(q1, q2))
         entropy = -torch.mean(log_prob_new.detach())
         return policy_loss, entropy
 
@@ -162,9 +170,10 @@ class DSAC:
     def update(self, epoch, step, s, a, r, s_next):
         # Get action for current state
         logits_mean, logits_std = self.actor(s)
-        policy_mean = torch.mean(torch.tanh(logits_mean), dim=0, keepdim=True)
-        policy_std = torch.mean(logits_std, dim=0, keepdim=True)
-        act_dist = TanhGaussDistribution(policy_mean, policy_std)
+        # policy_mean = torch.mean(torch.tanh(logits_mean)).item()
+        # policy_std = torch.mean(logits_std).item()
+
+        act_dist = GaussDistribution(logits_mean, logits_std)
         act_new, log_prob_new = act_dist.rsample()
         act_new = act_new.expand(BATCH_SIZE, -1, -1)
 
@@ -223,8 +232,8 @@ class DSAC:
         self.info["q2"].append(q2.item())
         self.info["q1_std"].append(q1_std.item())
         self.info["q2_std"].append(q2_std.item())
-        self.info["q1_mean_std"].append(torch.sqrt(self.q1_grad_scalar).item())
-        self.info["q2_mean_std"].append(torch.sqrt(self.q2_grad_scalar).item())
+        self.info["q1_mean_std"].append(self.ema_std1)
+        self.info["q2_mean_std"].append(self.ema_std2)
         self.info["q1_loss"].append(q1_loss.item())
         self.info["q2_loss"].append(q2_loss.item())
         self.info["critic_loss"].append(value_loss.item())

@@ -10,13 +10,14 @@ class ReplayBuffer:
         self.feat_dim = data.get_num_features()
         self.step_offset = 2 * (WINDOW_SIZE - 1)
         self.epoch_len = data.get_train_len() - self.step_offset
-        self.num_epochs = BUFFER_SIZE // self.epoch_len
+        self.max_epochs = BUFFER_SIZE // self.epoch_len
         self.num_epochs_last = PERCENT_LATEST * BATCH_SIZE
 
+        self.epoch = 0
         self.buffer = {
-            "i": torch.zeros((self.num_epochs, self.epoch_len, 1)),
-            "a": torch.zeros((self.num_epochs, self.epoch_len, NUM_ASSETS)),
-            "r": torch.zeros((self.num_epochs, self.epoch_len, 1, 1))
+            "i": torch.zeros((self.max_epochs, self.epoch_len, 1)),
+            "a": torch.zeros((self.max_epochs, self.epoch_len, NUM_ASSETS)),
+            "r": torch.zeros((self.max_epochs, self.epoch_len, 1, 1))
         }
 
     def add(self, e, i, a, r):
@@ -28,11 +29,12 @@ class ReplayBuffer:
             r (torch.Tensor): Reward tensor of shape (1,)
         """
         if i < WINDOW_SIZE - 1: return
-        epoch = e % self.num_epochs
+        epoch = int(e % self.max_epochs)
         step = i - self.step_offset
         self.buffer["i"][epoch, step] = torch.tensor(i)             # (1,)
         self.buffer["a"][epoch, step] = a.reshape(NUM_ASSETS)   # (asset_dim,)
         self.buffer["r"][epoch, step] = r.reshape(1)                # (1,)
+        self.epoch = max(self.epoch, epoch)
         
     def sample(self):
         """ Sample a batch of trajectories from the replay buffer
@@ -42,8 +44,8 @@ class ReplayBuffer:
             r (torch.Tensor): Reward tensor of shape (1, window_size)
             s_ (torch.Tensor): Next state tensor of shape (asset_dim, window_size, feat_dim)
         """
-        epochs_last = torch.tensor([self.num_epochs-1]*int(self.num_epochs_last))
-        epochs_rand = torch.randint(0, self.num_epochs, (BATCH_SIZE - int(self.num_epochs_last),))
+        epochs_last = torch.tensor([self.epoch]*int(self.num_epochs_last), dtype=torch.long)
+        epochs_rand = torch.randint(0, self.epoch+1, (BATCH_SIZE - int(self.num_epochs_last),))
         epochs = torch.cat((epochs_last, epochs_rand), dim=0)
         starts = torch.randint(0, self.epoch_len - WINDOW_SIZE - 1, (BATCH_SIZE,))
         ends = starts + WINDOW_SIZE

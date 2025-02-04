@@ -1,6 +1,9 @@
+
+import random
+import numpy as np
 import torch
 
-from config.base import MODEL, NUM_EPOCHS, UPDATE_STEPS, PLOT_FREQ, EVAL_FREQ, COLLECT_PRINT_FREQ, TRAIN_PRINT_FREQ, EVAL_PRINT_FREQ, LOG_DIR, EVAL_LEN, TRAIN_LEN
+from config.base import SEED, MODEL, NUM_EPOCHS, SEED_EPOCHS, UPDATE_STEPS, PLOT_FREQ, EVAL_FREQ, COLLECT_PRINT_FREQ, TRAIN_PRINT_FREQ, EVAL_PRINT_FREQ, LOG_DIR
 
 from loader.data_loader import StockDataLoader
 from replay.buffer import ReplayBuffer
@@ -22,6 +25,11 @@ from util.util import print_inline_every
 
 class TrainOffPolicy:
     def __init__(self):
+        random.seed(SEED)
+        np.random.seed(SEED)
+        torch.manual_seed(SEED)
+        torch.backends.cudnn.deterministic = True
+
         self.data = StockDataLoader()
 
         self.train_dl = self.data.get_train_data()
@@ -36,7 +44,7 @@ class TrainOffPolicy:
         self.env = TradingEnv()
         self.agent = Agent(self.data.get_num_features())
 
-        self.metrics = Metrics(self.env)
+        self.metrics = Metrics(self.env, self.eval_dates)
         self.visualizer = Visualizer(self.agent, self.env, self.train_dates, self.eval_dates)
 
         self.s = None
@@ -44,13 +52,30 @@ class TrainOffPolicy:
     def train(self):
         for epoch in range(NUM_EPOCHS):
             print(f"\nEpoch {epoch}:")
-            self._interact(epoch)
-            self._update(epoch)
-            self._evaluate(epoch)
-            if epoch % PLOT_FREQ == 0 and epoch > 0:
-                self.visualizer.plot()
+            if epoch < SEED_EPOCHS:
+                self._collect_rand(epoch)
+            else:
+                self._collect(epoch)
+                self._update(epoch)
+                self._evaluate(epoch)
 
-    def _interact(self, epoch):
+                if epoch % PLOT_FREQ == 0:
+                    self.visualizer.plot()
+
+    def _collect_rand(self, epoch):
+        for step, (feat, targ) in enumerate(self.train_dl):
+            feat = feat.squeeze(0)
+            if step == 0:
+                self.s = self.env.reset(feat)
+            else:
+                a = self.agent.act(self.s, is_random=True)
+                r, s_ = self.env.step(a, feat, targ)
+                self.buffer.add(epoch, step, a, r)
+                self.s = s_
+            print_inline_every(step, COLLECT_PRINT_FREQ, self.train_len, 
+                f" Seeding | Step: {step} | Date: {self.train_dates[step]} | Value: {self.env.value:.2f}")
+
+    def _collect(self, epoch):
         with torch.no_grad():
             self.agent.eval()
             for step, (feat, targ) in enumerate(self.train_dl):
@@ -63,7 +88,7 @@ class TrainOffPolicy:
                     self.buffer.add(epoch, step, a, r)
                     self.s = s_
                 print_inline_every(step, COLLECT_PRINT_FREQ, self.train_len, 
-                    f"Interact | Step: {step} | Date: {self.train_dates[step].date()} | Value: {self.env.value:.2f}")
+                    f"Interact | Step: {step} | Date: {self.train_dates[step]} | Value: {self.env.value:.2f}")
 
     def _update(self, epoch):
         self.agent.train()
@@ -87,5 +112,5 @@ class TrainOffPolicy:
                         _, s_ = self.env.step(a, feat, targ)
                         self.s = s_
                     print_inline_every(step, EVAL_PRINT_FREQ, self.eval_len, 
-                        f"Evaluate | Step: {step} | Date: {self.eval_dates[step].date()} | Value: {self.env.value:.2f}")
+                        f"Evaluate | Step: {step} | Date: {self.eval_dates[step]} | Value: {self.env.value:.2f}")
                 self.metrics.write()

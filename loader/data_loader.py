@@ -1,155 +1,165 @@
 import os
-import pandas as pd
+import talib as ta
 import torch
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from torch.utils.data import DataLoader
+import pandas_market_calendars as mcal
 
-from config.base import DEBUG, PICKLE_DIR, MIN_VOLUME, TRAIN_RATIO, WINDOW_SIZE, NUM_ASSETS
-from loader.stock_symbols import StockSymbols
+from config.base import DEBUG, PICKLE_DIR, TICKERS, MIN_VOLUME, NORM, TRAIN_RATIO, WINDOW_SIZE, NUM_ASSETS, INDICATORS
+from loader.tickers import Tickers
 from loader.stock_data import StockData
 
-# ==================================================================================================
-class StockDataset(Dataset):
-    def __init__(self, dates, features, targets, window_size):
-        self.dates = dates
-        self.features = features
-        self.targets = targets
-        self.window_size = window_size
+if NORM == "diff":
+    from loader.data_set import TrajDataset as Dataset
+elif NORM == "traj":
+    from loader.data_set import TrajNormDataset as Dataset
     
-    def __len__(self):
-        return len(self.dates) - (self.window_size + 1)
-    
-    def __getitem__(self, idx):
-        # Get the target
-        t = self.targets[:, idx+self.window_size-1].clone()
-
-        # Get the window of asset features
-        f = self.features[:, idx:idx+self.window_size, :].clone()
-
-        final_close = f[:, -1, 2].reshape(-1, 1, 1).expand(-1, f.size(1), 3)
-        final_volume = f[:, -1, 3].reshape(-1, 1, 1).expand(-1, f.size(1), 1)
-        divisor = torch.cat([final_close, final_volume], dim=2)
-
-        f[:, :, :4] = f[:, :, :4] / divisor
-        return f, t
-
-# ==================================================================================================
 class StockDataLoader:
     def __init__(self):
-        self.symbols = None         # Symbol data class
-        self.data = None            # Stock data class
+        self.tickers = None             # Ticker data class
+        self.data = None                # Stock data class
 
-        self.dates = None           # Common dates among all stock symbols
-        self.features = None        # Features for each stock symbol
-        self.targets = None         # Targets for each stock symbol
+        self.dates = None               # Common dates among all stock tickers
+        self.features = None            # Features for each stock ticker
+        self.targets = None             # Targets for each stock ticker
 
-        self.train_dataloader = None
-        self.eval_dataloader = None
+        self.train_dataloader = None    # Training data loader
+        self.eval_dataloader = None     # Evaluation data loader
 
-        # Retrieve the data
+        # Load the tickers and stock data
+        print("-"*50)
         if DEBUG and os.path.exists(PICKLE_DIR):
-            self.load_data()
+            self.tickers = Tickers()                # Load locally stored tickers
+            self.data = StockData(self.tickers)     # Load locally stored stock data
+            print("-"*50)
         else:
-            self.fetch_data()
+            self.tickers = Tickers(TICKERS)         # Fetch the tickers
+            self.data = StockData(self.tickers)     # Fetch the stock data
+            print("-"*50)
 
-        self._create_dataloaders()   # Create the data loaders
+            self._preprocess_data()                 # Preprocess the raw data
+            print("-"*50)
+
+            if DEBUG and not os.path.exists(PICKLE_DIR):
+                os.makedirs(PICKLE_DIR)
+                self.tickers.store()
+                self.data.store()
+                print("-"*50)
             
-    def load_data(self):
-        '''Load local pickled data'''
-        print(f'{"-"*50}\nLoading Pickled Data...', end='\r')
-        self.symbols = pd.read_pickle(PICKLE_DIR + "symbols.pkl")
-        self.dates = pd.read_pickle(PICKLE_DIR + "dates.pkl")
-        self.features = pd.read_pickle(PICKLE_DIR + "features.pkl")
-        self.targets = pd.read_pickle(PICKLE_DIR + "targets.pkl")
-        print(f'Loading Pickled Data... Done!\n{"-"*50}')
+        self._prepare_data()            # Prepare the data for training
+        print("-"*50)
 
-    def fetch_data(self):
-        '''Fetch the stock data from the web'''
-        print(f'{"-"*50}\nFetching Stock Symbols...', end='\r')
-        self.symbols = StockSymbols()
-        print(f'Fetching Stock Symbols... Done!\n{"-"*50}')
+        self._create_dataloaders()      # Create the data loaders
+        print("-"*50)
 
-        print(f'{"Fetching Historical Data: ":<25}', end='\r')
-        self.data = StockData(self.symbols)
-        print(f'\n{"-"*50}\nFetching Historical Data... Done!\n{"-"*50}')
+    def _preprocess_data(self):
+        '''Clean the stock data'''
+        # Ensure tickers have data for all valid trading days within their date range
+        nyse = mcal.get_calendar('NYSE')
+        for i, ticker in enumerate(self.tickers):
+            print(f'{"Pre-Processing Data: ":<25}{(i+1):>5} / {len(self.tickers):<5} | {(i+1)/len(self.tickers)*100:.2f}%', end='\r')
+            dates = self.data.get_dates(ticker)
+            valid_days = nyse.valid_days(dates[0], dates[-1]).date
 
-        print(f'{"Preparing Features: ":<25}', end='\r')
-        self._clip_zero_volume()
-        self._validate_symbols()
-        self._extract_features()
-        self._validate_dates()
-        self._initialize_tensors()
-        print(f'Done!\n{"-"*120}')
+            df = self.data[ticker].copy()
+            df = df.reindex(valid_days)             # Reindex to include all valid trading days
+            df['Volume'] = df['Volume'].fillna(0)   # Volume: Fill missing with 0
+            df = df.ffill()                         # Prices: Fill missing with the last valid
+            self.data[ticker] = df
+        print()
 
-        if DEBUG and not os.path.exists(PICKLE_DIR):
-            os.makedirs(PICKLE_DIR) 
-            print(f'{"Saving Pickled Data...":<25}', end='\r')
-            pd.to_pickle(self.symbols, PICKLE_DIR + "symbols.pkl")
-            pd.to_pickle(self.dates, PICKLE_DIR + "dates.pkl")
-            pd.to_pickle(self.features, PICKLE_DIR + "features.pkl")
-            pd.to_pickle(self.targets, PICKLE_DIR + "targets.pkl")
-            print(f'Saving Pickled Data... Done!\n{"-"*50}')
+    def _prepare_data(self):
+        print("Preparing Data...", end='\r')
+        self._condition_data()          # Condition the data
+        self._add_indicators()          # Add indicators to the data
+        self._cleanup_data()            # Clean up the modified data
+        self._initialize_tensors()      # Convert the data to tensors
+        print("Preparing Data... Done!")
 
-    def _clip_zero_volume(self):
-        '''Clip the data to include all dates after the last zero-volume date'''
-        for symbol in self.symbols:
-            zero_volume_dates = self.data[symbol][self.data[symbol]['Volume'] == 0].index
-            if len(zero_volume_dates) > 0:
-                self.data[symbol] = self.data[symbol].loc[zero_volume_dates[-1]:]
+    def _condition_data(self):
+        # Filter tickers with insufficient average volume
+        tickers = []
+        for ticker in self.tickers:
+            if self.data[ticker]['Volume'].mean() > MIN_VOLUME:
+                tickers.append(ticker)
 
-    def _validate_symbols(self):
-        '''Validate symbols based on minimum volume criteria and data length'''
-        # Filter out symbols with insufficient volume
-        suff_vol_symbols = [symbol for symbol in self.symbols if self.data[symbol]['Volume'].mean() > MIN_VOLUME]
-        self.symbols.audit(suff_vol_symbols)
+        # Filter tickers to include those with the most data
+        tickers = [(ticker, len(self.data[ticker])) for ticker in tickers]
+        tickers = sorted(tickers, key=lambda x: x[1])
+        tickers = [ticker for ticker, _ in tickers[-(NUM_ASSETS-1):]]
 
-        # Choose symbols with top data length
-        symbols_by_length = [(symbol, len(self.data[symbol])) for symbol in self.symbols]
-        sorted_symbols = sorted(symbols_by_length, key=lambda x: x[1])
-        suff_len_symbols = [symbol for symbol, _ in sorted_symbols[-(NUM_ASSETS-1):]]
-        self.symbols.audit(suff_len_symbols)
+        # Filter the data to include only the selected tickers
+        self.tickers.filter(tickers)
+        self.data.filter(tickers)
 
-        # Update the data to only include the chosen symbols
-        self.data.audit(self.symbols)
-
-    def _extract_features(self):
+    def _add_indicators(self):
         '''Extract features from the stock data'''
-        for i, symbol in enumerate(self.symbols):
-            print(f'{"Extracting Features: ":<25}{(i+1):>5} / {len(self.symbols):<5} | {(i+1)/len(self.symbols)*100:.2f}%', end='\r')
-            self.data[symbol].drop(columns=['Open'], inplace=True)
-            # self.data[symbol].drop(columns=['Volume'], inplace=True)
-            self.data[symbol].bfill(inplace=True)
+        if INDICATORS:
+            for i, ticker in enumerate(self.tickers):
+                print(f'{"Adding Indicators: ":<25}{(i+1):>5} / {len(self.tickers):<5} | {(i+1)/len(self.tickers)*100:.2f}%', end='\r')
+                df = self.data[ticker].copy()
+                df['sma_30'] = ta.SMA(df['Close'], timeperiod=30)
+                df['sma_60'] = ta.SMA(df['Close'], timeperiod=60)
+                df['macd'], _, _ = ta.MACD(df['Close'])
+                df['bbu'], _, df['bbl'] = ta.BBANDS(df['Close'])
+                df['rsi_30'] = ta.RSI(df['Close'], timeperiod=30)
+                df['dx_30'] = ta.DX(df['High'], df['Low'], df['Close'], timeperiod=30)
+                self.data[ticker] = df
+            print()
 
-    def _validate_dates(self):
-        '''Validate the dates based on common dates among all stock symbols'''
-        self.dates = set(self.data.get_dates(self.symbols[0]))
-        for symbol in self.symbols:
-            self.dates = self.dates.intersection(set(self.data.get_dates(symbol)))
+    def _cleanup_data(self):
+        '''Clean up the data'''
+        # Get common dates among all tickers
+        self.dates = self.data.get_dates(self.tickers[0])
+        for ticker in self.tickers[1:]:
+            self.dates = self.dates.intersection(self.data.get_dates(ticker))
         self.dates = sorted(list(self.dates))
+        
+        for ticker in self.tickers:
+            df = self.data[ticker].copy()
+            df = df.reindex(self.dates)     # Filter data to include only common dates
+            df = df.drop(columns=['Open'])  # Remove 'Open' column (assumes curr open == last Close)
 
-        for symbol in self.symbols:
-            self.data[symbol] = self.data[symbol].loc[self.dates]
+            # Normalize the data
+            if NORM == "diff":
+                df['High'] = (df['High']/df['Close'].shift(1))-1
+                df['Low'] = (df['Low']/df['Close'].shift(1))-1
+                df['Close'] = (df['Close']/df['Close'].shift(1))-1
+                df['Volume'] = (df['Volume']/df['Volume'].shift(1))-1
+                df = df.drop(index=self.dates[0])           # Drop the first row
+                df = df.replace([np.inf, -np.inf], np.nan)  # Replace inf with NaN
+                df = df.fillna(0)                           # Fill NaN with 0
+
+            self.data[ticker] = df          # Update the data
 
     def _initialize_tensors(self):
         '''Initialize the tensors for the features and targets'''
-        num_symbols, num_dates, num_features = self.data.shape()
-        self.targets = torch.zeros(num_symbols, num_dates-1)
-        self.features = torch.zeros(num_symbols, num_dates-1, num_features)
+        num_tickers, num_dates, num_features = self.data.shape()
+        self.targets = torch.zeros(num_tickers, num_dates)
+        self.features = torch.zeros(num_tickers, num_dates, num_features)
 
         # Fill prototype tensors with data
-        for i, (symbol, df) in enumerate(self.data):
-            price_relative = (df['Close'].to_numpy() / df['Close'].shift(1).to_numpy())
-            self.targets[i] = torch.from_numpy(price_relative[1:])
-            self.features[i] = torch.from_numpy(df.to_numpy()[1:])
+        for i, (ticker, df) in enumerate(self.data):
+            if NORM == "diff":
+                price_relative = df['Close']+1
+            else:
+                price_relative = df['Close']/df['Close'].shift(1)
+                price_relative = price_relative.drop(index=self.dates[0])
+                price_relative = price_relative.replace([np.inf, -np.inf], np.nan)
+                price_relative = price_relative.fillna(1)
+            self.targets[i] = torch.from_numpy(price_relative.to_numpy())
+            self.features[i] = torch.from_numpy(df.to_numpy())
 
         # Prepend additional asset representing cash with everything set to 1
-        self.targets = torch.cat([torch.ones((1, num_dates-1)), self.targets], dim=0)
-        self.features = torch.cat([torch.ones((1, num_dates-1, num_features)), self.features], dim=0)
+        self.targets = torch.cat([torch.ones((1, num_dates)), self.targets], dim=0)
+        self.features = torch.cat([torch.zeros((1, num_dates, num_features)), self.features], dim=0)
 
         # Append additional feature representing asset weights with everything set to 0
-        self.features = torch.cat([self.features, torch.zeros((num_symbols+1, num_dates-1, 1))], dim=2)
+        self.features = torch.cat([self.features, torch.zeros((num_tickers+1, num_dates, 1))], dim=2)
 
     def _create_dataloaders(self):
         '''Create the data loaders for training and testing'''
+        print(f'{"Creating Data Loaders..."}', end='\r')
         start_eval = int(len(self.dates) * TRAIN_RATIO)
 
         # Slice the data into training and testing sets
@@ -162,10 +172,11 @@ class StockDataLoader:
         eval_targets = self.targets[:, start_eval:]
 
         # Create the data loaders
-        train_dataset = StockDataset(train_dates, train_features, train_targets, WINDOW_SIZE)
+        train_dataset = Dataset(train_dates, train_features, train_targets, WINDOW_SIZE)
         self.train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False)
-        eval_dataset = StockDataset(eval_dates, eval_features, eval_targets, WINDOW_SIZE)
+        eval_dataset = Dataset(eval_dates, eval_features, eval_targets, WINDOW_SIZE)
         self.eval_dataloader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
+        print("Creating Data Loaders... Done!")
 
     def get_train_data(self):
         return self.train_dataloader
@@ -186,7 +197,7 @@ class StockDataLoader:
         return self.eval_dataloader.dataset.dates
     
     def get_assets(self):
-        return ['$'] + list(self.symbols.data.keys())
+        return ['$'] + list(self.tickers.data.keys())
     
     def get_num_assets(self):
         return self.features.size(0)

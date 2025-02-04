@@ -1,45 +1,35 @@
 
+import os
+from config.base import LOG_DIR, REPORT_DIR, RISK_FREE_RATE
+import quantstats as qs
 import numpy as np
-
-from config.base import LOG_DIR
+import pandas as pd
 
 class Metrics:
-    def __init__(self, env):
+    def __init__(self, env, dates):
         self.log_file = LOG_DIR + "latest.log"
         self.env = env
+        self.dates = dates
 
     def sharpe(self):
-        ''' ### Calculate Annualized Sharpe ratio
-        Args:
-            returns (np.ndarray): Returns of the portfolio
-        Returns:
-            sharpe (float): Sharpe ratio
-        '''
-        returns = np.array(self.env.info["returns"])
-        excess_returns = returns - 0.04
-        mu = np.mean(excess_returns)
-        std = np.std(excess_returns, ddof=1)
-        return (mu / std) * np.sqrt(252)
+        returns = self.env.info["returns"]
+        returns = pd.DataFrame(returns, index=self.dates[-len(returns):])
+        sharpe = qs.stats.sharpe(returns, rf=RISK_FREE_RATE)
+        return sharpe.to_numpy()[0]
+    
+    def sortino(self):
+        returns = self.env.info["returns"]
+        returns = pd.DataFrame(returns, index=self.dates[-len(returns):])
+        sortino = qs.stats.sortino(returns, rf=RISK_FREE_RATE)
+        return sortino.to_numpy()[0]
 
     def mdd(self):
-        ''' ### Calculate Maximum Drawdown
-        Args:
-            returns (np.ndarray): Returns of the portfolio
-        Returns:
-            mdd (float): Maximum Draw
-        '''
-        values = np.array(self.env.info["values"])
-        peak = np.maximum.accumulate(values)
-        drawdown = (peak - values) / peak
-        return np.max(drawdown) * 100
+        values = self.env.info["values"]
+        values = pd.DataFrame(values, index=self.dates[-len(values):])
+        mdd = qs.stats.max_drawdown(values)
+        return mdd.to_numpy()[0]
 
     def average_turnover(self):
-        ''' ### Calculate Average Turnover
-        Args:
-            weights (np.ndarray): Weights of the portfolio
-        Returns:
-            avg_turnover (float): Average Turnover
-        '''
         weights = np.array(self.env.info["actions"])
         turnover = 0
         for i in range(1, len(weights)):
@@ -48,6 +38,10 @@ class Metrics:
     
     def write(self):
         ''' ### Write metrics to the log file'''
+        # report_loc = REPORT_DIR + "latest.html"
+        # if not os.path.exists(REPORT_DIR):
+        #     os.makedirs(REPORT_DIR)
+        # qs.reports.html(returns=returns, benchmark="SPY", rf=RISK_FREE_RATE, download_filename=report_loc)
         with open(self.log_file, "a") as f:
             f.write(f"Evaluation Step:\n")
             f.write(f"     Sharpe Ratio: {self.sharpe()}\n")

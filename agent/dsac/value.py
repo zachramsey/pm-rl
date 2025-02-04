@@ -30,16 +30,29 @@ import torch.nn as nn
 
 #--------------------------------------------------------------------------------------------------------------
 
+from config.dsac import HIDDEN_DIM
 from config.lsre_cann import NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM
 from agent.lsre_cann.lsre_cann import LSRE_CANN
-from agent.lsre_cann.attention import AttentionBlock
+from agent.lsre_cann.attention import AttentionBlock, QuickGELU
 
 class LSRE_CANN_Critic(nn.Module):
     def __init__(self, feat_dim):
         super(LSRE_CANN_Critic, self).__init__()
         self.repr = LSRE_CANN(feat_dim)
-        self.attn = AttentionBlock(NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM, 1)
-        self.out = nn.Linear(LATENT_DIM, 2)
+
+        self.mu_attn = AttentionBlock(NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM, 1)
+        self.mu_out = nn.Sequential(
+            nn.Linear(LATENT_DIM, HIDDEN_DIM),
+            QuickGELU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
+
+        self.std_attn = AttentionBlock(NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM, 1)
+        self.std_out = nn.Sequential(
+            nn.Linear(LATENT_DIM, HIDDEN_DIM),
+            QuickGELU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
 
     def forward(self, s, a):
         ''' ### Forward pass of Critic
@@ -54,12 +67,12 @@ class LSRE_CANN_Critic(nn.Module):
         s = self.repr(s)
 
         # (b, a, d), (b, a, 1) -> (b, a, d)
-        x = self.attn(s, a)
+        mu = self.mu_attn(s, a)
+        mu = self.mu_out(mu)
 
-        # (b, a, d) -> (b, a, 2)
-        x = self.out(x)
-        
-        mu, std = torch.chunk(x, chunks=2, dim=-1)
+        # (b, a, d), (b, a, 1) -> (b, a, d)
+        std = self.std_attn(s, a)
+        std = self.std_out(std)
         log_std = nn.functional.softplus(std)
-        
+
         return mu, log_std

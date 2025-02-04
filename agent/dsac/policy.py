@@ -30,15 +30,27 @@ from config.dsac import MIN_LOG_STD, MAX_LOG_STD
     
 #--------------------------------------------------------------------------------------------------------------
 
-from config.dsac import MIN_LOG_STD, MAX_LOG_STD
+from config.dsac import HIDDEN_DIM, MIN_LOG_STD, MAX_LOG_STD
 from config.lsre_cann import LATENT_DIM
 from agent.lsre_cann.lsre_cann import LSRE_CANN
+from agent.lsre_cann.attention import QuickGELU
 
 class LSRE_CANN_Actor(nn.Module):
     def __init__(self, cfg):
         super(LSRE_CANN_Actor, self).__init__()
         self.repr = LSRE_CANN(cfg)
-        self.out = nn.Linear(LATENT_DIM, 2)
+
+        self.mu_out = nn.Sequential(
+            nn.Linear(LATENT_DIM, HIDDEN_DIM),
+            QuickGELU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
+        
+        self.std_out = nn.Sequential(
+            nn.Linear(LATENT_DIM, HIDDEN_DIM),
+            QuickGELU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
 
     def forward(self, s):
         ''' ### Forward pass of Actor
@@ -51,10 +63,11 @@ class LSRE_CANN_Actor(nn.Module):
         # (b, a, w, f) -> (b, a, d)
         x = self.repr(s)
 
-        # (b, a, d) -> (b, a, 2)
-        x = self.out(x)
+        # (b, a, d) -> (b, a, 1)
+        mu = self.mu_out(x)
 
-        mu, log_std = torch.chunk(x, chunks=2, dim=-1)
+        # (b, a, d) -> (b, a, 1)
+        log_std = self.std_out(x)
         std = torch.exp(torch.clamp(log_std, MIN_LOG_STD, MAX_LOG_STD))
 
         return mu, std

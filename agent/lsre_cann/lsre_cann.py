@@ -6,31 +6,9 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
-from config.base import NUM_ASSETS
+from config.base import NUM_ASSETS, WINDOW_SIZE
 from config.lsre_cann import NUM_LATENTS, LATENT_DIM, NUM_CROSS_HEADS, CROSS_HEAD_DIM, NUM_SELF_HEADS, SELF_HEAD_DIM, DEPTH, DROPOUT
 from agent.lsre_cann.attention import AttentionBlock
-
-# class PositionalEncoding(nn.Module):
-#     def __init__(self, cfg):
-#         super().__init__()
-#         position = torch.arange(cfg["window_size"]).unsqueeze(1)
-#         div_term = torch.exp(torch.arange(0, cfg["feat_dim"], 2) * -(np.log(10000.0) / cfg["feat_dim"]))
-#         pe = torch.zeros(cfg["window_size"], cfg["feat_dim"])
-#         pe[:, 0::2] = torch.sin(position * div_term)
-#         pe[:, 1::2] = torch.cos(position * div_term)
-#         self.pe = nn.Buffer(pe)
-
-#     def forward(self, x):
-#         ''' ### Forward pass of PositionalEncoding
-#         Args:
-#             x (torch.Tensor): Input tensor of shape (batch_dim*asset_dim, window_size, feat_dim)
-#         Returns:
-#             x (torch.Tensor): Output tensor of shape (batch_dim*asset_dim, window_size, feat_dim)
-#         '''
-#         x = rearrange(x, 'b w f -> w b f')
-#         x = x + self.pe[:x.size(0)]
-#         x = rearrange(x, 'w b f -> b w f')
-#         return x
 
 
 class LSRE_Encode(nn.Module):
@@ -111,8 +89,7 @@ class CANN_Encode(nn.Module):
 class LSRE_CANN(nn.Module):
     def __init__(self, feat_dim):
         super().__init__()
-        # self.pos_enc = PositionalEncoding(cfg)
-        # self.pos_emb = nn.Embedding(cfg["window_size"], cfg["feat_dim"])  #NOTE Original implementation
+        self.pos_emb = nn.Embedding(WINDOW_SIZE, feat_dim)
         self.lsre = LSRE_Encode(feat_dim)
         self.dropout = nn.Dropout(DROPOUT)
         self.cann = CANN_Encode()
@@ -127,10 +104,10 @@ class LSRE_CANN(nn.Module):
         '''
         # (asset_dim, window_size, feat_dim) -> (1, asset_dim, window_size, feat_dim)
         if x.ndim == 3: x = x.unsqueeze(0)
+        x1 = x
 
-        # x = self.pos_enc(x)
-        # pos_emb = self.pos_emb(torch.arange(self.window_size))    #NOTE Original implementation
-        # x = x + rearrange(pos_emb, "n d -> () n d")
+        pos_emb = self.pos_emb(torch.arange(WINDOW_SIZE, device=x.device))
+        x = x + rearrange(pos_emb, "n d -> () n d")
 
         # (batch_dim, asset_dim, window_size, feat_dim) -> (batch_dim, asset_dim, latent_dim)
         z = self.lsre(x)
@@ -138,6 +115,5 @@ class LSRE_CANN(nn.Module):
 
         # (batch_dim, asset_dim, latent_dim) -> (batch_dim, asset_dim, latent_dim)
         h = self.cann(z)
-
         return h
         

@@ -1,11 +1,11 @@
 from config.base import WINDOW_SIZE, NUM_ASSETS
 
-import torch
+import numpy as np
 
 class ActionBuffer:
     def __init__(self):
         """ Initialize the action buffer """
-        self.buffer = torch.zeros((WINDOW_SIZE, NUM_ASSETS))  # Buffer to store actions
+        self.buffer = np.zeros((WINDOW_SIZE, NUM_ASSETS))  # Buffer to store actions
         self.buffer[0, 0] = 1                                   # Init first action as all cash
         self.idx = 1                                            # Pointer to curr position in the buffer
         self.is_full = False                                    # Track if the buffer is full
@@ -38,14 +38,14 @@ class ActionBuffer:
         if self.is_full:
             buffer = self.buffer
         else:
-            padding = torch.zeros((WINDOW_SIZE - self.idx, NUM_ASSETS))
-            buffer = torch.cat((padding, self.buffer[:self.idx]), dim=0)
+            padding = np.zeros((WINDOW_SIZE - self.idx, NUM_ASSETS))
+            buffer = np.concat((padding, self.buffer[:self.idx]), axis=0)
 
         return buffer.T
 
     def reset(self):
         """ Reset the buffer to the initial state """
-        self.buffer = torch.zeros((WINDOW_SIZE, NUM_ASSETS))
+        self.buffer = np.zeros((WINDOW_SIZE, NUM_ASSETS))
         self.buffer[0, 0] = 1
         self.idx = 1
         self.is_full = False
