@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from einops import rearrange
 import numpy as np
-from config.lsre_cann import DROPOUT
+from config.base import DROPOUT
 
 class QuickGELU(nn.Module):
     def __init__(self):
@@ -27,7 +27,7 @@ class Attention(nn.Module):
         self.k_proj = nn.Linear(kv_dim, inner_dim, bias=False)
         self.v_proj = nn.Linear(kv_dim, inner_dim, bias=False)
 
-        self.dropout = nn.Dropout(DROPOUT)
+        # self.dropout = nn.Dropout(DROPOUT)
 
         self.out_proj = nn.Linear(inner_dim, q_dim)
 
@@ -51,7 +51,7 @@ class Attention(nn.Module):
         scores = (q @ k.transpose(-2, -1)) * self.scale
         # NOTE: Causal masking?
         attn = torch.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
+        # attn = self.dropout(attn)
 
         # (b*a, h, n, w) x (b*a, h, w, d) -> (b*a, h, n, d)
         out = (attn @ v)
@@ -73,7 +73,7 @@ class AttentionBlock(nn.Module):
         else:
             kv_dim = q_dim
         self.attn = Attention(num_heads, head_dim, q_dim, kv_dim)
-        self.dropout1 = nn.Dropout(DROPOUT)
+        # self.dropout1 = nn.Dropout(DROPOUT)
 
         self.norm = nn.LayerNorm(q_dim)
         ff_dim = 4 * np.power(2, np.ceil(np.log2(q_dim))).astype(int)   # 4 times the input dim
@@ -82,7 +82,7 @@ class AttentionBlock(nn.Module):
             QuickGELU(),
             nn.Linear(ff_dim, q_dim)
         )
-        self.dropout2 = nn.Dropout(DROPOUT)
+        # self.dropout2 = nn.Dropout(DROPOUT)
 
     def forward(self, q, kv = None):
         ''' ### Forward pass of AttentionBlock
@@ -94,6 +94,8 @@ class AttentionBlock(nn.Module):
         '''
         q_norm = self.q_norm(q)
         kv_norm = q_norm if kv is None else self.kv_norm(kv)
-        q = q + self.dropout1(self.attn(q_norm, kv_norm))
-        q = q + self.dropout2(self.ff(self.norm(q)))
+        # q = q + self.dropout1(self.attn(q_norm, kv_norm))
+        # q = q + self.dropout2(self.ff(self.norm(q)))
+        q = q + self.attn(q_norm, kv_norm)
+        q = q + self.ff(self.norm(q))
         return q

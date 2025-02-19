@@ -7,11 +7,10 @@ import torch.nn as nn
 from einops import rearrange, repeat
 
 from config.base import NUM_ASSETS, WINDOW_SIZE
-from config.lsre_cann import NUM_LATENTS, LATENT_DIM, NUM_CROSS_HEADS, CROSS_HEAD_DIM, NUM_SELF_HEADS, SELF_HEAD_DIM, DEPTH, DROPOUT
-from agent.lsre_cann.attention import AttentionBlock
+from config.base import DEPTH, NUM_LATENTS, LATENT_DIM, NUM_CROSS_HEADS, CROSS_HEAD_DIM, NUM_SELF_HEADS, SELF_HEAD_DIM, DROPOUT
+from net.attention import AttentionBlock
 
-
-class LSRE_Encode(nn.Module):
+class LSRE(nn.Module):
     def __init__(self, feat_dim):
         super().__init__()
 
@@ -55,8 +54,7 @@ class LSRE_Encode(nn.Module):
 
         return z
 
-
-class CANN_Encode(nn.Module):
+class CANN(nn.Module):
     def __init__(self):
         super().__init__()
         self.scale = LATENT_DIM ** -0.5
@@ -65,34 +63,41 @@ class CANN_Encode(nn.Module):
         self.k_linear = nn.Linear(LATENT_DIM, LATENT_DIM)
         self.v_linear = nn.Linear(LATENT_DIM, LATENT_DIM)
 
+        self.out = nn.Linear(LATENT_DIM, 1)
+
     def forward(self, z):
         ''' ### Forward pass of CANN
         Args:
             z (torch.Tensor): Latent tensor of shape (batch_dim, asset_dim, latent_dim)
         Returns:
-            h (torch.Tensor): Hidden state of shape (batch_dim, asset_dim, latent_dim)
+            h (torch.Tensor): Hidden state of shape (batch_dim, asset_dim, 1)
         '''
-        q = self.q_linear(z)    # (batch_dim, asset_dim, latent_dim)
-        k = self.k_linear(z)    # (batch_dim, asset_dim, latent_dim)
-        v = self.v_linear(z)    # (batch_dim, asset_dim, latent_dim)
+        q = self.q_linear(z)        # (B, A, D)
+        k = self.k_linear(z)        # (B, A, D)
+        v = self.v_linear(z)        # (B, A, D)
 
-        # (batch_dim, asset_dim, latent_dim) x (batch_dim, latent_dim, asset_dim) 
-        beta = torch.matmul(q, k.transpose(1, 2)) * self.scale  # (batch_dim, asset_dim, asset_dim)
-        beta = torch.softmax(beta, dim=-1)
+        # (B, A, D) x (B, D, A) -> (B, A, A)
+        beta = torch.matmul(q, k.transpose(1, 2)) * self.scale
+        beta = torch.softmax(beta, dim=-1).unsqueeze(-1)
 
-        # (batch_dim, asset_dim, asset_dim) x (batch_dim, asset_dim, latent_dim)
-        h = torch.matmul(beta, v)   # (batch_dim, asset_dim, latent_dim)
+        # (B, 1, A, A) x (B, A, D, 1) -> (B, A, A, D)
+        h = v.unsqueeze(1) * beta
+
+        # (B, A, A, D) -> (B, A, D)
+        h = torch.sum(h, dim=2)
+        
+        # (B, A, D) -> (B, A, 1)
+        h = self.out(h)
         
         return h
-
 
 class LSRE_CANN(nn.Module):
     def __init__(self, feat_dim):
         super().__init__()
         self.pos_emb = nn.Embedding(WINDOW_SIZE, feat_dim)
-        self.lsre = LSRE_Encode(feat_dim)
+        self.lsre = LSRE(feat_dim)
         self.dropout = nn.Dropout(DROPOUT)
-        self.cann = CANN_Encode()
+        self.cann = CANN()
 
     def forward(self, x):
         ''' ### Forward pass of LSRE_CANN
@@ -100,20 +105,20 @@ class LSRE_CANN(nn.Module):
             x (torch.Tensor): Input tensor of shape (batch_dim, asset_dim, window_size, feat_dim)
             reset (bool): Whether to reset the latent tensor
         Returns:
-            h (torch.Tensor): Hidden state of shape (batch_dim, asset_dim, latent_dim)
+            h (torch.Tensor): Hidden state of shape (batch_dim, asset_dim, 1)
         '''
         # (asset_dim, window_size, feat_dim) -> (1, asset_dim, window_size, feat_dim)
         if x.ndim == 3: x = x.unsqueeze(0)
-        x1 = x
 
         pos_emb = self.pos_emb(torch.arange(WINDOW_SIZE, device=x.device))
-        x = x + rearrange(pos_emb, "n d -> () n d")
+        x = x + repeat(pos_emb, "n d -> b a n d", b=x.shape[0], a=x.shape[1])
 
         # (batch_dim, asset_dim, window_size, feat_dim) -> (batch_dim, asset_dim, latent_dim)
         z = self.lsre(x)
         z = self.dropout(z)
 
-        # (batch_dim, asset_dim, latent_dim) -> (batch_dim, asset_dim, latent_dim)
+        # (batch_dim, asset_dim, latent_dim) -> (batch_dim, asset_dim, 1)
         h = self.cann(z)
+
         return h
         

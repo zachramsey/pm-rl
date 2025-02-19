@@ -241,7 +241,7 @@ class DSAC:
         self.info["entropy"].append(entropy.item())
         self.info["alpha"].append(torch.exp(self.log_alpha).item())
 
-    def log_info(self, log_file):
+    def log_info(self):
         # Check that logs directory exists
         if not os.path.exists(LOG_DIR):
             os.makedirs(LOG_DIR)

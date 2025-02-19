@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from datetime import datetime as dt
 
-from config.base import PLOT_DIR, NUM_ASSETS, UPDATE_STEPS
+from config.base import PLOT_DIR, NUM_ASSETS, TRAINER
 
 class Visualizer:
     def __init__(self, agent, env, train_dates, eval_dates):
@@ -13,6 +13,9 @@ class Visualizer:
         self.train_dates = train_dates
         self.eval_dates = eval_dates
 
+    def plot(self):
+        self.plot_update_info()
+        # self.animate_portfolio()
 
     def plot_update_info(self):
         lo = lambda x, y: [a - b for a, b in zip(x, y)]
@@ -21,53 +24,51 @@ class Visualizer:
         if not os.path.exists(PLOT_DIR):
             os.makedirs(PLOT_DIR)
             
-        e, q1, q2, q1_std, q2_std, q1_mean_std, q2_mean_std, \
-        q1_loss, q2_loss, critic_loss, actor_loss, entropy, alpha = self.agent.info.values()
+        if TRAINER == "Off-Policy":
+            e, q1, q2, q1_std, q2_std, q1_mean_std, q2_mean_std, \
+            q1_loss, q2_loss, critic_loss, actor_loss, entropy, alpha = self.agent.info.values()
+            step = np.arange(len(q1))
+            
+            plt.figure(figsize=(8, 10))
 
-        step = np.arange(len(q1))
-        
-        plt.figure(figsize=(8, 10))
+            q = np.where(q1 <= q2, q1, q2)
+            std = np.where(q1 <= q2, q1_std, q2_std)
+            plt.subplot(2, 1, 1)
+            plt.plot(step, q)
+            plt.fill_between(step, lo(q, std), hi(q, std), alpha=0.2)
+            plt.xlabel("Step")
+            plt.ylabel("Q")
+            plt.title("Minimum Q Value and Standard Deviation")
 
-        q = np.where(q1 <= q2, q1, q2)
-        std = np.where(q1 <= q2, q1_std, q2_std)
-        plt.subplot(2, 1, 1)
-        plt.plot(step, q)
-        plt.fill_between(step, lo(q, std), hi(q, std), alpha=0.2)
-        plt.xlabel("Step")
-        plt.ylabel("Q")
-        plt.title("Minimum Q Value and Standard Deviation")
+            plt.subplot(2, 1, 2)
+            plt.plot(step, critic_loss, label="Critic")
+            plt.plot(step, actor_loss, label="Actor")
+            plt.xlabel("Step")
+            plt.ylabel("Loss")
+            plt.title("Actor & Critic Loss")
+            plt.legend()
+        elif TRAINER == "On-Policy":
+            plt.figure(figsize=(8, 10))
+            
+            e, loss = self.agent.info.values()
+            step = np.arange(len(loss))
+            plt.subplot(2, 1, 1)
+            plt.plot(step, loss)
+            plt.xlabel("Step")
+            plt.ylabel("Loss")
+            plt.title("Policy Loss")
 
-        critic_data = np.reshape(critic_loss, (-1, UPDATE_STEPS))
-        critic_mean = np.mean(critic_data, axis=1)
-        critic_std = np.std(critic_data, axis=1)
-        # critic_min = np.min(critic_data, axis=1)
-        # critic_max = np.max(critic_data, axis=1)
-
-        actor_data = np.reshape(actor_loss, (-1, UPDATE_STEPS))
-        actor_mean = np.mean(actor_data, axis=1)
-        actor_std = np.std(actor_data, axis=1)
-        # actor_min = np.min(actor_data, axis=1)
-        # actor_max = np.max(actor_data, axis=1)
-
-        epochs = np.arange(len(critic_mean))
-
-        plt.subplot(2, 1, 2)
-        plt.plot(step, critic_loss, label="Critic")
-        plt.plot(step, actor_loss, label="Actor")
-        # plt.plot(epochs, critic_mean, label="Critic")
-        # plt.fill_between(epochs, lo(critic_mean, critic_std), hi(critic_mean, critic_std), alpha=0.2)
-        # plt.fill_between(epochs, critic_min, critic_max, alpha=0.2)
-        # plt.plot(epochs, actor_mean, label="Actor")
-        # plt.fill_between(epochs, lo(actor_mean, actor_std), hi(actor_mean, actor_std), alpha=0.2)
-        # plt.fill_between(epochs, actor_min, actor_max, alpha=0.2)
-        plt.xlabel("Step")
-        plt.ylabel("Loss")
-        plt.title("Actor & Critic Loss")
-        plt.legend()
+            vals, acts, rews, rets = self.env.info.values()
+            step = np.arange(len(vals))
+            plt.subplot(2, 1, 2)
+            plt.plot(step, vals, label="Value")
+            plt.plot(step, rews, label="Reward")
+            plt.plot(step, rets, label="Return")
+            plt.xlabel("Step")
+            plt.title("Backtesting Metrics")
 
         plt.savefig(PLOT_DIR + "latest.png")
         plt.close()
-
 
     def animate_portfolio(self):
         weights = np.array(self.env.info["actions"])
@@ -81,7 +82,6 @@ class Visualizer:
         ax.set_xlim(-0.5, NUM_ASSETS - 0.5)
         ax.set_ylim(0, 1, auto=True, emit=True)
         ax.set_xticks(range(NUM_ASSETS))
-        # ax.set_xticklabels(symbols, rotation=90, ha="right")
         ax.set_xlabel("Stock Symbol")
         ax.set_ylabel("Weight")
 
@@ -100,8 +100,3 @@ class Visualizer:
 
         ani = FuncAnimation(fig, update, frames=len(self.eval_dates), interval=100, blit=False)
         ani.save(os.path.join(PLOT_DIR, f"portfolio_{dt.now().strftime("%y-%m-%d_%H-%M-%S")}.mp4"), fps=30)
-
-
-    def plot(self):
-        self.plot_update_info()
-        # self.animate_portfolio()

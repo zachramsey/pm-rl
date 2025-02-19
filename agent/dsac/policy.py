@@ -32,8 +32,8 @@ from config.dsac import MIN_LOG_STD, MAX_LOG_STD
 
 from config.dsac import HIDDEN_DIM, MIN_LOG_STD, MAX_LOG_STD
 from config.lsre_cann import LATENT_DIM
-from agent.lsre_cann.lsre_cann import LSRE_CANN
-from agent.lsre_cann.attention import QuickGELU
+from net.lsre_cann import LSRE_CANN
+from net.attention import QuickGELU
 
 class LSRE_CANN_Actor(nn.Module):
     def __init__(self, cfg):

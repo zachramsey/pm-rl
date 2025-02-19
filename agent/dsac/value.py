@@ -32,8 +32,8 @@ import torch.nn as nn
 
 from config.dsac import HIDDEN_DIM
 from config.lsre_cann import NUM_CROSS_HEADS, CROSS_HEAD_DIM, LATENT_DIM
-from agent.lsre_cann.lsre_cann import LSRE_CANN
-from agent.lsre_cann.attention import AttentionBlock, QuickGELU
+from net.lsre_cann import LSRE_CANN
+from net.attention import AttentionBlock, QuickGELU
 
 class LSRE_CANN_Critic(nn.Module):
     def __init__(self, feat_dim):

@@ -9,7 +9,7 @@ class Metrics:
     def __init__(self, env, dates):
         self.log_file = LOG_DIR + "latest.log"
         self.env = env
-        self.dates = dates
+        self.dates = pd.to_datetime(dates)
 
     def sharpe(self):
         returns = self.env.info["returns"]
