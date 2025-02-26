@@ -18,7 +18,6 @@ class LoadYF:
     
     def __init__(self, tickers: list[str]):
         self.tickers = tickers                      # List of tickers
-        self.prop = {}                              # Initialize dictionary to store properties
         self.data = {}                              # Initialize dictionary to store data
 
         self.session = self._configure_session()    # Configure the requests session
@@ -26,12 +25,6 @@ class LoadYF:
         if not os.path.exists(DATA_DIR):            # Create data directory if it does not exist
             os.makedirs(DATA_DIR)
         self._download_data()                       # Download the historical data
-    
-    def get_prop(self, ticker: str = None) -> dict:
-        '''Return the properties for the given ticker or all tickers'''
-        if ticker is None:
-            return self.prop
-        return self.prop[ticker]
     
     def get_data(self, ticker: str = None) -> dict:
         '''Return the data for the given ticker or all tickers'''
@@ -43,12 +36,6 @@ class LoadYF:
         '''Separate tickers into existing and new based on data directory'''
         for i, ticker in enumerate(self.tickers):
             print(f'{"Fetching Data: ":<25}{i:>5} / {len(self.tickers):<5} | {i/len(self.tickers)*100:.2f}%', end='\r')
-            ticker_ = yf.Ticker(ticker)
-            self.prop[ticker] = {
-                'sector': ticker_.info['sectorName'],
-                'industry': ticker_.info['industryName']
-            }
-            
             file_path = os.path.join(DATA_DIR, f"{ticker}.csv")
             if os.path.exists(file_path):
                 df = pd.read_csv(file_path, index_col='Date')   # Load data from csv

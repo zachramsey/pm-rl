@@ -1,5 +1,5 @@
 
-DEBUG = True
+LOAD_LOCAL = True
 SEED = 42
 ALGORITHM = "PG"          # "DreamerV3"/"DSAC"/"PG"/"SAC"/"TD3"
 
@@ -7,12 +7,12 @@ ALGORITHM = "PG"          # "DreamerV3"/"DSAC"/"PG"/"SAC"/"TD3"
 SAVE_PATTERN = "{model}_{type}_{date:%Y-%m-%d_%H-%M-%S}"
 
 # Directories
-DATA_DIR = "data/stock_data/"
-PICKLE_DIR = "data/pickles/"
-MODEL_DIR = "data/models/"
-LOG_DIR = "data/logs/"
-PLOT_DIR = "data/plots/"
-REPORT_DIR = "data/reports/"
+DATA_DIR = "_local/stock_data/"
+PICKLE_DIR = "_local/pickles/"
+MODEL_DIR = "_local/models/"
+LOG_DIR = "_local/logs/"
+PLOT_DIR = "_local/plots/"
+REPORT_DIR = "_local/reports/"
 
 # Logging
 EVAL_FREQ = 1
@@ -27,19 +27,19 @@ TRAIN_RATIO = 0.8
 WINDOW_SIZE = 32
 NUM_ASSETS = 32
 INDICATORS = {
-    "ema": {"timeperiod": 30}, 
-    "ema": {"timeperiod": 60}, 
-    "ema": {"timeperiod": 90}, 
-    "bbands": {"timeperiod": 20}, 
-    "macd": {}, 
-    "atr": {}, 
-    "rsi": {"timeperiod": 30}, 
-    "adx": {"timeperiod": 30}, 
-    "dx": {"timeperiod": 30}, 
-    "stoch": {}, 
-    "cci": {}, 
-    "obv": {}, 
-    "adosc": {}
+    # "ema": {"timeperiod": 30}, 
+    # "ema": {"timeperiod": 60}, 
+    # "ema": {"timeperiod": 90}, 
+    # "bbands": {"timeperiod": 20}, 
+    # "macd": {}, 
+    # "atr": {}, 
+    # "rsi": {"timeperiod": 30}, 
+    # "adx": {"timeperiod": 30}, 
+    # "dx": {"timeperiod": 30}, 
+    # "stoch": {}, 
+    # "cci": {}, 
+    # "obv": {}, 
+    # "adosc": {}
 }
 
 # Environment

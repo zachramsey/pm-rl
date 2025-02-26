@@ -1,14 +1,16 @@
 from datetime import datetime
 import numpy as np
+import os
 import pandas as pd
 import pandas_market_calendars as mcal
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from statsmodels.tsa.stattools import adfuller
 from talib import abstract
 import tensordict as td
 from tensordict.tensorclass import tensorclass
 import torch
 from typing import Any
+
+from data.ffd import FixedFracDiff
 
 @tensorclass
 class Asset:
@@ -18,7 +20,7 @@ class Asset:
         ```python
         Asset: {  
             'ticker': str,  
-            'info': {  
+            'meta': {  
                   'sector': str,  
                 'industry': str  
                      '...': ...  
@@ -38,7 +40,7 @@ class Asset:
     '''
     datetimes: np.ndarray      # Timestamps for the prices and feature data
     ticker: str                 # The stock ticker
-    info: td.TensorDict         # Asset information
+    meta: td.TensorDict         # Asset metadata
     prices: torch.Tensor        # Relative closing prices
     features: td.TensorDict     # Historical (time-series) feature data
     
@@ -49,14 +51,14 @@ class Asset:
     
     def __init__(self, 
                  ticker: str,
-                 info: td.TensorDict,
+                 meta: td.TensorDict,
                  datetimes: np.ndarray,
                  prices: torch.Tensor,
                  features: td.TensorDict
                 ) -> None:
         ''' ### Initialize the asset data '''
         self.ticker = ticker
-        self.info = info
+        self.meta = meta
         self.datetimes = datetimes
         self.prices = prices
         self.features = features
@@ -121,7 +123,7 @@ class Asset:
         '''
         return Asset(
             ticker=self.ticker,
-            info=self.info,
+            meta=self.meta,
             datetimes=self.datetimes[idx],
             prices=self.prices[idx],
             features=self.features[idx]
@@ -133,52 +135,52 @@ class Asset:
         ################################################################## '''
     
     @property
-    def info(self) -> td.TensorDict:
-        ''' The asset info '''
-        return self['info']
+    def meta(self) -> td.TensorDict:
+        ''' The asset metadata '''
+        return self['meta']
 
     
     @property
     def sector(self) -> str:
         ''' The sector of the asset '''
-        return self.info['sector']
+        return self.meta['sector']
     
 
     @property
     def industry(self) -> str:
         ''' The industry of the asset '''
-        return self.info['industry']
+        return self.meta['industry']
     
     
-    def get_info(self, key: str) -> Any:
-        ''' ### Return the info with the given key
+    def get_meta(self, key: str) -> Any:
+        ''' ### Return the metadata with the given key
 
             Args:
-                key (str): The key of the info
+                key (str): The key of the metadata
 
             Returns:
-                Any: The value of the info
+                Any: The value of the metadata
         '''
-        return self.info[key]
+        return self.meta[key]
     
 
-    def set_info(self, key: str, value: str) -> None:
-        ''' ### Set the info with the given key
+    def set_meta(self, key: str, value: str) -> None:
+        ''' ### Set the metadata with the given key
         
             Args:
-                key (str): The key of the info
-                value (str): The value of the info
+                key (str): The key of the metadata
+                value (str): The value of the metadata
         '''
-        self.info[key] = value
+        self.meta[key] = value
 
 
-    def del_info(self, key: str) -> None:
-        ''' ### Remove the info with the given key
+    def del_meta(self, key: str) -> None:
+        ''' ### Remove the metadata with the given key
         
             Args:
-                key (str): The key of the info
+                key (str): The key of the metadata
         '''
-        self.info.pop(key)
+        self.meta.pop(key)
     
 
     ''' ##################################################################
@@ -286,6 +288,7 @@ class Asset:
                 if name_ == 'real': name_ = name
                 name_ = name_ + '_' + '_'.join([f'{value}' for value in params.values()])
                 self.features[name_] = torch.from_numpy(output).to(torch.float32)
+        self.clip(start=lookback)
         return lookback
             
 
@@ -307,8 +310,8 @@ class Asset:
         self.prices = self.prices[start:end]
         self.datetimes = self.datetimes[start:end]
 
-    
-    def stationary(self, thres: float = 1e-5) -> int:
+
+    def stationary(self, thres: float = 1e-5, pickle_dir: str = None, printout: str = None) -> int:
         ''' ### Make the data stationary
 
             Uses the fixed-width window fractional difference method described in Chapter 5
@@ -322,29 +325,15 @@ class Asset:
             Returns:
                 int: The maximum differentiation width
         '''
-        max_width = 0
-        for feature, data in self.features.items():
-            data = torch.log(data)
-            for d in np.linspace(0, 1, 21):
-                # Compute weights for the data
-                w = [1.]
-                for k in range(1, 100):
-                    assert k < len(data), f'Insufficient data for feature {feature}'
-                    w_ = -w[-1]/k * (d-k+1)
-                    if abs(w_) < thres: break
-                    w.append(w_)
-                w = torch.tensor(w[::-1], dtype=torch.float32)
-                width = len(w)-1
-                # Apply the weights to the data
-                data_ = torch.zeros((len(data)-width,), dtype=torch.float32)
-                for i in range(width, len(data)):
-                    data_[i-width] = torch.dot(w, data[i-width:i+1])
-                # Check for stationarity
-                if adfuller(data_)[1] < 0.05:
-                    self.features[feature] = data_
-                    max_width = max(max_width, width)
-                    break
-        return max_width
+        if pickle_dir is not None:
+            file = pickle_dir + f'd_opt_{self.ticker}.pkl'
+            exists = os.path.exists(file)
+            d_opt = pd.read_pickle(file) if exists else None
+        ffd = FixedFracDiff(self.features, thres, d_opt)
+        self.features = ffd.fit_transform(printout)
+        if pickle_dir is not None and not exists: 
+            pd.to_pickle(ffd.d_opt, file)
+        return ffd.get_max_width()
     
 
     def split(self, purge_length: int, train_ratio: float = 0.8) -> tuple['Asset', 'Asset']:
@@ -417,16 +406,16 @@ class Asset:
         ################################################################## '''
     
     @classmethod      
-    def from_data(cls, ticker: str, info: dict[str,], data: pd.DataFrame) -> 'Asset':
-        ''' ### Create an AssetData object from the given info and data
+    def from_data(cls, ticker: str, meta: dict[str,], data: pd.DataFrame) -> 'Asset':
+        ''' ### Create an AssetData object from the given metadata and data
 
             ## Notes:
-            - The info must contain the sector and industry of the asset
+            - The metadata must contain the sector and industry of the asset
             - The data must contain OHLCV data
 
             Args:
                 ticker (str): The stock ticker
-                info (dict[str,]): Asset information of the form {info_key: info_value}
+                meta (dict[str,]): Asset metadata
                 data (DataFrame): Time-series data with feature columns and a datetime index
 
             Returns:
@@ -437,22 +426,39 @@ class Asset:
         data = data.rename(columns=lambda x: x.lower())
         assert all([feature in data.columns for feature in ohlcv]), "Data must include OHLCV data, missing {}".format([feature for feature in ohlcv if feature not in data])
         assert all([len(data[feature].dropna()) == len(data['close'].dropna()) for feature in data]), "All features must be the same length, found {}".format({feature: len(data[feature].dropna()) for feature in data})
-        assert 'sector' in info and 'industry' in info, "Info must include sector and industry, missing {}".format([key for key in info if key not in ['sector', 'industry']])
+        assert 'sector' in meta and 'industry' in meta, "Metadata must include sector and industry, missing {}".format([key for key in meta if key not in ['sector', 'industry']])
 
-        df = data.copy()
-        df = df.rename(columns=lambda x: x.lower())                 # Lowercase column names
-        nyse = mcal.get_calendar('NYSE')                            # Get NYSE calendar
-        valid_days = nyse.valid_days(df.index[0], df.index[-1])     # Get valid trading days
-        df = df.reindex(valid_days.tz_localize(None))               # Reindex to include all valid trading days
-        df['volume'] = df['volume'].fillna(0)                       # Volume: Fill missing with 0
-        df = df.ffill()                                             # Prices: Fill missing with the last valid
+        data = data.rename(columns=lambda x: x.lower())                 # Lowercase column names
+        nyse = mcal.get_calendar('NYSE')                                # Get NYSE calendar
+        valid_days = nyse.valid_days(data.index[0], data.index[-1])     # Get valid trading days
+        data = data.reindex(valid_days.tz_localize(None))               # Reindex to all valid trading days
+        data['volume'] = data['volume'].fillna(0)                       # Missing Volume: Fill w/ 0
+        data = data.ffill()                                             # Missing Prices: Fill w/ the prior valid
+
+        f_labels = data.columns
+        f_datas = torch.from_numpy(data.to_numpy(dtype=np.float32).T)
+        feature_data = td.TensorDict({
+            f_label: f_data for f_label, f_data in zip(f_labels, f_datas)
+        }, batch_size=len(data))
 
         # Create the asset
         asset = cls(
             ticker=ticker,
-            info=td.TensorDict(info),
-            datetimes=df.index[1:].to_pydatetime(),
-            prices=torch.tensor((df['close']/df['close'].shift(1)).to_numpy()[1:], dtype=torch.float32),
-            features=td.TensorDict({key: torch.tensor(value[1:], dtype=torch.float32) for key, value in df.to_dict(orient='list').items()}, batch_size=len(df)-1)
+            meta=td.TensorDict(meta),
+            datetimes=data.index[1:].to_pydatetime(),
+            prices=feature_data['close'][1:]/feature_data['close'][:-1],
+            features=feature_data[1:]
         )
         return asset
+    
+
+    def feature_tensor(self) -> torch.Tensor:
+        ''' ### Return the asset meta (expanded) and feature data as a tensor
+
+            Returns:
+                torch.Tensor: The asset data of shape (data_length, num_meta + num_features)
+        '''
+        meta = torch.tensor([self.meta[key] for key in self.meta.keys()], dtype=torch.float32)
+        meta = meta.unsqueeze(0).expand(len(self), -1)
+        data = torch.stack([self.features[key] for key in self.features.keys()], dim=1)
+        return torch.cat((meta, data), dim=1)

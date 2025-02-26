@@ -1,5 +1,5 @@
 __pycache__/
-data/
+_local/
 _depr/
 .vscode/
 .python-version

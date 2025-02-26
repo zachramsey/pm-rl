@@ -6,9 +6,10 @@ import pickle
 import tensordict as td
 from tensordict.tensorclass import tensorclass
 import torch
+from torch.utils.data import DataLoader
 from typing import Any
 
-from asset import Asset
+from data.asset import Asset
 
 @tensorclass
 class AssetPool:
@@ -26,9 +27,9 @@ class AssetPool:
         # Validate that constituent assets have homogeneous data
         assert isinstance(pool, dict) or isinstance(pool, td.TensorDict), "Asset pool must be created from dict or TensorDict"
         assert all([isinstance(pool[t], Asset) for t in pool.keys()]), "All assets must be of type Asset"
-        assert all([pool[list(pool.keys())[0]].info.keys() == pool[t].info.keys() for t in list(pool.keys())[1:]]), "Properties must match for all assets"
-        assert all([pool[list(pool.keys())[0]].features.keys() == pool[t].features.keys() for t in list(pool.keys())[1:]]), "Features must match for all assets"
-        assert all([np.array_equal(pool[list(pool.keys())[0]].datetimes, pool[t].datetimes) for t in list(pool.keys())[1:]]), "Dates must match for all assets"
+        tickers = list(pool.keys())
+        assert all([pool[tickers[0]].meta.keys() == pool[t].meta.keys() for t in tickers[1:]]), "Properties must match for all assets"
+        assert all([pool[tickers[0]].features.keys() == pool[t].features.keys() for t in tickers[1:]]), "Features must match for all assets"
         
         # Initialize the asset pool
         self.pool = pool if isinstance(pool, td.TensorDict) else td.TensorDict(pool)
@@ -52,7 +53,7 @@ class AssetPool:
         
             Args:
                 key (str): The asset ticker symbol
-                value (tuple[dict[str,], pd.DataFrame]): The asset info and data
+                value (tuple[dict[str,], pd.DataFrame]): The asset metadata and data
         '''
         if isinstance(value, Asset):
             self.pool[key] = value
@@ -96,10 +97,10 @@ class AssetPool:
     
 
     @property
-    def info(self) -> list[str]:
-        ''' ### The list of info names '''
-        names = self.pool[self.tickers[0]].info.keys()
-        assert all([names == self.pool[t].info.keys() for t in self.tickers]), "Properties do not match for all tickers"
+    def meta(self) -> list[str]:
+        ''' ### The list of metadata names '''
+        names = self.pool[self.tickers[0]].meta.keys()
+        assert all([names == self.pool[t].meta.keys() for t in self.tickers]), "Properties do not match for all tickers"
         return list(names)
     
 
@@ -151,43 +152,43 @@ class AssetPool:
         return self.pool[ticker].industry
     
     
-    def get_info(self, info: str, ticker: str = None) -> dict[str, Any] | Any:
-        ''' ### Return the info of the asset
+    def get_meta(self, meta: str, ticker: str = None) -> dict[str, Any] | Any:
+        ''' ### Return the metadata of the asset
         
             Args:
-                info (str): The info to return
+                meta (str): The metadata to return
                 ticker (str): The ticker of the asset (default: all tickers)
                 
             Returns:
-                (dict[str, Any] | Any): The info data
+                (dict[str, Any] | Any): The metadata
         '''
         if ticker is None:
-            return {t: self.pool[t].info[info] for t in self.tickers}
-        return self.pool[ticker].get_info(info)
+            return {t: self.pool[t].meta[meta] for t in self.tickers}
+        return self.pool[ticker].get_meta(meta)
     
 
-    def set_info(self, ticker: str, info: str, value) -> None:
-        ''' ### Set the info of the asset
+    def set_meta(self, ticker: str, meta: str, value) -> None:
+        ''' ### Set the metadata of the asset
 
             Args:
-                info (str): The info to set
-                value: The info data
+                meta (str): The metadata to set
+                value: The metadata
         '''
         for ticker in self.tickers:
-            if info in self.pool[ticker].info.keys():
-                assert isinstance(value, type(self.pool[ticker].info[info])), f"Expected type {type(self.pool[ticker].info[info])}, got {type(value)} for info {info}"
-        self.pool[ticker].set_info(info, value)
+            if meta in self.pool[ticker].meta.keys():
+                assert isinstance(value, type(self.pool[ticker].meta[meta])), f"Expected type {type(self.pool[ticker].meta[meta])}, got {type(value)} for meta {meta}"
+        self.pool[ticker].set_meta(meta, value)
 
 
-    def del_info(self, info: str) -> None:
-        ''' ### Delete the info for all assets
+    def del_meta(self, meta: str) -> None:
+        ''' ### Delete the metadata for all assets
 
             Args:
-                info (str): The info to delete
+                meta (str): The metadata to delete
         '''
         for ticker in self.tickers:
-            if info in self.pool[ticker].info.keys():
-                self.pool[ticker].del_info(info)
+            if meta in self.pool[ticker].meta.keys():
+                self.pool[ticker].del_meta(meta)
 
 
     def get_sector(self, ticker: str = None) -> dict[str, str] | str:
@@ -369,7 +370,7 @@ class AssetPool:
             self.pool[ticker].clip(start, end)
 
 
-    def stationary(self, thresh: float = 1e-5) -> None:
+    def stationary(self, thresh: float = 1e-5, pickle_dir: str = None, printout: bool = False) -> None:
         ''' ### Recturn the asset pool with the data differentiated to be stationary
 
             Uses the fixed-width window fractional difference method described in Chapter 5
@@ -385,12 +386,14 @@ class AssetPool:
                 AssetPool: The stationary data
         '''
         max_width = 0
-        for ticker in self.tickers:
-            max_width = max(max_width, self.pool[ticker].stationary(thresh))
+        for i, ticker in enumerate(self.tickers):
+            printout = f'Making Data Stationary | {ticker} ({i+1} / {len(self.tickers)})' if printout else None
+            max_width = max(max_width, self.pool[ticker].stationary(thresh, pickle_dir, printout))
+        print()
         self.lookback_length = max(max_width, self.lookback_length)
     
     
-    def window(self, window_size: int) -> None:
+    def window(self, window_size: int = 32) -> None:
         ''' ### Return the asset pool with the data windowed
 
             ## Notes:
@@ -439,49 +442,123 @@ class AssetPool:
         ################################################################## '''
     
     @classmethod
-    def from_data(cls, info: dict[str, dict[str,]], data: dict[str, pd.DataFrame]) -> 'AssetPool':
+    def from_data(cls, meta: dict[str, dict[str,]], data: dict[str, pd.DataFrame]) -> 'AssetPool':
         ''' ### Create an asset pool from the given data
         
             Args:
-                info (dict[str, dict[str,]]): The asset info of the form {ticker: {info_key: info_val}}
+                meta (dict[str, dict[str,]]): The asset metadata of the form {ticker: {metadata_key: metadata_val}}
                 data (dict[str, DataFrame]): The asset data of the form {ticker: DataFrame}
 
             returns:
                 AssetPool: The asset pool
         '''
         # Validate that input is homogeneous and correctly formatted
-        assert isinstance(info, dict) and isinstance(data, dict), "Properties and data must be dictionaries"
-        assert info.keys() == data.keys(), "Properties and data must have the same keys"
-        assert all([isinstance(info[t], dict) for t in info.keys()]), "All info must be of type dict"
+        assert isinstance(meta, dict) and isinstance(data, dict), "Properties and data must be dictionaries"
+        assert meta.keys() == data.keys(), "Properties and data must have the same keys"
+        assert all([isinstance(meta[t], dict) for t in meta.keys()]), "All metadata must be of type dict"
         assert all([isinstance(data[t], pd.DataFrame) for t in data.keys()]), "All data must be of type pd.DataFrame"
-        assert all([info[list(info.keys())[0]] == info[t] for t in list(info.keys())[1:]]), "Properties must match for all tickers"
+        assert all([meta[list(meta.keys())[0]].keys() == meta[t].keys() for t in list(meta.keys())[1:]]), "Properties must match for all tickers"
         assert all([data[list(data.keys())[0]].columns.equals(data[t].columns) for t in list(data.keys())[1:]]), "Columns must match for all data"
 
-        return cls({ticker: Asset.from_data(ticker, info[ticker], data[ticker]) for ticker in info.keys()})
+        pool = td.TensorDict({})
+        len_meta = len(meta)
+        for i, ticker in enumerate(meta.keys()):
+            print(f'{"Building Asset Pool: ":<25}{i+1:>5} / {len_meta:<5} | {i+1/len_meta*100:.2f}%', end='\r')
+            pool[ticker] = Asset.from_data(ticker, meta[ticker], data[ticker])
+        print()
+        return cls(pool)
 
 
-    def save(self, pickle_dir: str) -> None:
-        ''' ### Save the asset pool to the pickle directory
+    def save(self, path: str, name: str) -> None:
+        ''' ### Save the asset pool to a pickle file
 
             Args:
-                pickle_dir (str): The directory to save the pickle files
+                path (str): The directory to save the pickle files
+                name (str): The name of the pickle file
         '''
-        if not os.path.exists(pickle_dir):
-            os.makedirs(pickle_dir)
-        pickle.dump((self.pool, self.lookback_length), open(pickle_dir, 'wb'))
+        if not os.path.exists(path): os.makedirs(path)
+        pickle.dump((self.pool, self.lookback_length), open(path + name + ".pkl", "wb"))
 
 
     @classmethod
-    def load(cls, pickle_dir: str) -> 'AssetPool':
+    def load(cls, path: str, name: str) -> 'AssetPool':
         
-        ''' ### Load the asset pool from the pickle directory
+        ''' ### Load the asset pool from a pickle file
 
             Args:
-                pickle_dir (str): The directory to load the pickle files
+                path (str): The directory to load the pickle files
+                name (str): The name of the pickle file
 
             Returns:
                 AssetPool: The asset pool
         '''
-        assert os.path.exists(pickle_dir), f"Pickle directory {pickle_dir} not found"
-        pool, lookback_length = pickle.load(open(pickle_dir, 'rb'))
+        assert os.path.exists(path), f"Pickle directory {path} not found"
+        pool, lookback_length = pickle.load(open(path + name + ".pkl", "rb"))
         return cls(pool, lookback_length)
+    
+
+    def get_loader(self) -> DataLoader:
+        ''' ### Get a dataloader for the asset pool
+
+            Returns:
+                DataLoader: The dataloader
+        '''
+        data = td.TensorDict({
+            'datetimes': np.array(self.datetimes),
+            'prices': torch.stack([self.pool[t].prices for t in self.tickers], dim=0),
+            'data': torch.stack([self.pool[t].feature_tensor() for t in self.tickers], dim=0)
+        })
+        return DataLoader(data, batch_size=1, shuffle=False, collate_fn=lambda x: x)
+
+
+    def wf_loaders(self, 
+                   train_ratio: float = 0.8,
+                   thres: float | None = None,
+                   window_size: int = 1,
+                   scale: str | None = None
+                   ) -> DataLoader:
+        ''' ### Get dataloaders for training and backtesting with the walk-forward method
+
+            ## Notes:
+                Dataloaders yield the tuple (datetime, prices, data):
+                    **datetime** (ndarray[1,]): The datetime of the data  
+                    **prices** (Tensor[n_assets, window_size]): Relative price data  
+                    **data** (Tensor[n_assets, window_size, n_features]): Feature data
+        
+            Args:
+                train_ratio (float): The ratio of data to use for training
+                thres (float): The threshold for differentiation    *(e.g. 1e-5)*
+                window_size (int): The window size for the data     *(e.g. 32)*
+                scale (str): The scaling method to use              *(None/'minmax'/'standard')*
+
+            Returns:
+                (tuple[DataLoader, DataLoader]): The training and testing dataloaders
+        '''
+        pool = self.clone()
+
+        if thres is not None: pool.stationary(thres)
+        train_pool, test_pool = pool.split(train_ratio)
+        if scale is not None:
+            train_pool.scale(scale)
+            test_pool.scale(scale)
+        if window_size > 1:
+            train_pool.window(window_size)
+            test_pool.window(window_size)
+
+        train_data = td.TensorDict({
+            'datetimes': np.array(train_pool.datetimes),
+            'prices': torch.stack([train_pool.pool[t].prices for t in train_pool.tickers], dim=0),
+            'data': torch.stack([train_pool.pool[t].feature_tensor() for t in train_pool.tickers], dim=0)
+        })
+        
+        test_data = td.TensorDict({
+            'datetimes': np.array(test_pool.datetimes),
+            'prices': torch.stack([test_pool.pool[t].prices for t in test_pool.tickers], dim=0),
+            'data': torch.stack([test_pool.pool[t].feature_tensor() for t in test_pool.tickers], dim=0)
+        })
+
+        train_loader = DataLoader(train_data, batch_size=1, shuffle=False, collate_fn=lambda x: x)
+        test_loader = DataLoader(test_data, batch_size=1, shuffle=False, collate_fn=lambda x: x)
+
+        return train_loader, test_loader
+    

@@ -8,7 +8,7 @@ from config.base import ALGORITHM, SEED, NUM_EPOCHS, BATCH_SIZE
 from config.base import ROLLOUT_PRINT_FREQ, TRAIN_PRINT_FREQ, EVAL_PRINT_FREQ
 from config.base import PLOT_FREQ, EVAL_FREQ
 
-from loader.data_loader import StockDataLoader
+from data.data_loader import StockDataLoader
 from replay.rollout_buffer import RolloutBuffer
 
 from env.sim.trading_env import TradingEnv
@@ -28,15 +28,15 @@ class Train:
         torch.backends.cudnn.deterministic = True
 
         self.data = StockDataLoader()
-        self.train_dl = self.data.train_data
-        self.test_dl = self.data.test_data
+        self.train_dl = self.data.train_dl
+        self.eval_dl = self.data.test_dl
         
-        self.buffer = RolloutBuffer(self.data)
+        self.buffer = RolloutBuffer(self.data.num_features, self.data.train_len, self.data.train_prices)
         self.env = TradingEnv()
-        self.agent = Agent(self.data.get_num_features())
+        self.agent = Agent(self.data.num_features)
 
-        self.metrics = Metrics(self.env, self.eval_dates)
-        self.visualizer = Visualizer(self.agent, self.env, self.train_dates, self.eval_dates)
+        self.metrics = Metrics(self.env, self.data.test_dates)
+        self.visualizer = Visualizer(self.agent, self.env, self.data.train_dates, self.data.test_dates)
 
         self.s = None
 
@@ -55,23 +55,23 @@ class Train:
         self.agent.training_mode(False)
         self.buffer.reset()
         rew_tot = 0
-        for step, data in enumerate(self.train_dl):
+        for step, (datetime, prices, data) in enumerate(self.train_dl):
             if step == 0:
                 self.s = self.env.reset(data)
             else:
                 a = self.agent.act(self.s)
-                r, s_ = self.env.step(a, data)
+                r, s_ = self.env.step(a, data, prices)
                 self.buffer.add(self.s, a, self.env.value, r)
                 rew_tot += r
                 self.s = s_
             print_inline_every(step, ROLLOUT_PRINT_FREQ, len(self.train_dl),
-                f"  Rollout | Step: {step}  | Date: {self.train_dl.datetimes[step]} | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
+                f"  Rollout | Step: {step}  | Date: {datetime.strftime('%d/%m/%y')} | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
 
     def _update(self, epoch):
         self.agent.training_mode(True)
         for i, (s, a, r, _v, _a, p) in enumerate(self.buffer.sample_random()):
             self.agent.update(i, s, a, r, _v, _a, p)
-            print_inline_every(i, TRAIN_PRINT_FREQ, self.train_len // BATCH_SIZE, 
+            print_inline_every(i, TRAIN_PRINT_FREQ, len(self.train_dl) // BATCH_SIZE, 
                 f"  Update | Step: {i} | Loss: {self.agent.info["loss"][-1]:.12f}")
         sys.stdout.write("\033[F\033[K")
         print(f"  Update | Step: {i} | Loss: {np.average(self.agent.info["loss"]):.12f}")
@@ -82,15 +82,14 @@ class Train:
             self.agent.training_mode(False)
             with torch.no_grad():
                 rew_tot = 0
-                for step, (feat, targ) in enumerate(self.test_dl):
-                    feat = feat.squeeze(0)
+                for step, (datetime, prices, data) in enumerate(self.eval_dl):
                     if step == 0:
-                        self.s = self.env.reset(feat)
+                        self.s = self.env.reset(data)
                     else:
                         a = self.agent.act(self.s)
-                        r, s_ = self.env.step(a, feat, targ)
+                        r, s_ = self.env.step(a, data, prices)
                         rew_tot += r
                         self.s = s_
-                    print_inline_every(step, EVAL_PRINT_FREQ, len(self.test_dl),
-                        f"Evaluate | Step: {step} | Date: {self.test_dl.datetimes[step]}  | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
+                    print_inline_every(step, EVAL_PRINT_FREQ, len(self.eval_dl),
+                        f"Evaluate | Step: {step} | Date: {datetime.strftime('%d/%m/%y')}  | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
                 self.metrics.write()
