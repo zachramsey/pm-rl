@@ -20,7 +20,8 @@ PLOT_FREQ = 1
 SAVE_FREQ = 25
 
 # Data
-TICKERS = "sp500"               # "sp500"/"sp100"/"djia"
+TARGETS = "sp500"               # "sp500"/"sp100"/"djia"
+CONTEXT = ['XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLRE', 'XLK', 'XLU']
 SCALER = "minmax"               # "standard"/"minmax"
 MIN_VOLUME = 100000
 TRAIN_RATIO = 0.8
@@ -45,7 +46,6 @@ INDICATORS = {
 # Environment
 INITIAL_CASH = 25000
 COMISSION = 0.0
-PROP_WINNERS = 1
 
 # Reward
 REWARD = "log_returns"  # "returns"/"log_returns"/"sharpe_ratio"

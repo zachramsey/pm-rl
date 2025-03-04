@@ -56,7 +56,7 @@ class FixedFracDiff:
         pval = adfuller(diff)[1]
         return pval
 
-    def fit(self, printout: str | None = None) -> None:
+    def fit(self) -> None:
         for i, f in enumerate(self.feats):
             self.i = i
             low, high, pval = 0.0, 1.0, 1.0
@@ -76,8 +76,6 @@ class FixedFracDiff:
                         low = d_mid
                     else:
                         high = d_mid
-            if printout is not None:
-                print(printout + f" | {f:^10} | d: {self.d_opt[f]:.6f} | width: {int(self.widths[i])}   ", end='\r')
 
     def transform(self) -> None:
         max_width = self.get_max_width()
@@ -90,8 +88,8 @@ class FixedFracDiff:
                 data[f] = diff[-(self.len_data-max_width):]
         self.data = data.to('cpu')
     
-    def fit_transform(self, printout: str | None = None) -> td.TensorDict:
-        self.fit(printout)
+    def fit_transform(self) -> td.TensorDict:
+        self.fit()
         self.transform()
         return self.data
     

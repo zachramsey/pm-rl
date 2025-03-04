@@ -3,14 +3,13 @@ from config.base import WINDOW_SIZE, NUM_ASSETS, INITIAL_CASH, BATCH_SIZE
 
 import torch
 import numpy as np
-from loader.data_loader import StockDataLoader
 
 class RolloutBuffer:
-    def __init__(self, data: StockDataLoader):
-        self.feat_dim = data.get_num_features()
+    def __init__(self, num_features, train_len, train_prices):
+        self.feat_dim = num_features
         self.step_offset = WINDOW_SIZE - 1
-        self.epoch_len = data.get_train_len() - self.step_offset
-        self.prices = np.array(data.get_train_targets().transpose(0, 1)[WINDOW_SIZE-1:].unsqueeze(-1))
+        self.epoch_len = train_len - self.step_offset
+        self.prices = np.array(train_prices.transpose(0, 1)[WINDOW_SIZE-1:].unsqueeze(-1))
 
         self.init_act = torch.zeros((NUM_ASSETS, 1))
         self.init_act[0] = 1

@@ -18,16 +18,16 @@ if ALGORITHM == "PG":
 
 from util.eval import Metrics
 from util.plot import Visualizer
-from util.util import print_inline_every
+from util.logger import TrainingLogger
 
 class Train:
-    def __init__(self):
+    def __init__(self, logger: TrainingLogger):
         random.seed(SEED)
         np.random.seed(SEED)
         torch.manual_seed(SEED)
         torch.backends.cudnn.deterministic = True
 
-        self.data = StockDataLoader()
+        self.data = StockDataLoader(logger)
         self.train_dl = self.data.train_dl
         self.eval_dl = self.data.test_dl
         
@@ -35,6 +35,7 @@ class Train:
         self.env = TradingEnv()
         self.agent = Agent(self.data.num_features)
 
+        self.logger = logger
         self.metrics = Metrics(self.env, self.data.test_dates)
         self.visualizer = Visualizer(self.agent, self.env, self.data.train_dates, self.data.test_dates)
 
@@ -43,10 +44,11 @@ class Train:
     def train(self):
         self._evaluate(0)
         for epoch in range(NUM_EPOCHS):
-            print(f"\nEpoch {epoch}:")
+            self.logger.epoch_start(epoch)
             self._rollout(epoch)
             self._update(epoch)
             self._evaluate(epoch)
+            self.logger.epoch_end()
 
             if epoch % PLOT_FREQ == 0:
                 self.visualizer.plot()
@@ -54,7 +56,6 @@ class Train:
     def _rollout(self, epoch):
         self.agent.training_mode(False)
         self.buffer.reset()
-        rew_tot = 0
         for step, (datetime, prices, data) in enumerate(self.train_dl):
             if step == 0:
                 self.s = self.env.reset(data)
@@ -62,19 +63,14 @@ class Train:
                 a = self.agent.act(self.s)
                 r, s_ = self.env.step(a, data, prices)
                 self.buffer.add(self.s, a, self.env.value, r)
-                rew_tot += r
                 self.s = s_
-            print_inline_every(step, ROLLOUT_PRINT_FREQ, len(self.train_dl),
-                f"  Rollout | Step: {step}  | Date: {datetime.strftime('%d/%m/%y')} | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
+            self.logger.log_rollout(step, datetime, r, self.env.value)
 
     def _update(self, epoch):
         self.agent.training_mode(True)
         for i, (s, a, r, _v, _a, p) in enumerate(self.buffer.sample_random()):
             self.agent.update(i, s, a, r, _v, _a, p)
-            print_inline_every(i, TRAIN_PRINT_FREQ, len(self.train_dl) // BATCH_SIZE, 
-                f"  Update | Step: {i} | Loss: {self.agent.info["loss"][-1]:.12f}")
-        sys.stdout.write("\033[F\033[K")
-        print(f"  Update | Step: {i} | Loss: {np.average(self.agent.info["loss"]):.12f}")
+            self.logger.log_update(i, self.agent.info)
         self.agent.log_info()
 
     def _evaluate(self, epoch):
@@ -90,6 +86,5 @@ class Train:
                         r, s_ = self.env.step(a, data, prices)
                         rew_tot += r
                         self.s = s_
-                    print_inline_every(step, EVAL_PRINT_FREQ, len(self.eval_dl),
-                        f"Evaluate | Step: {step} | Date: {datetime.strftime('%d/%m/%y')}  | Reward: {rew_tot:.6f} | Value: {self.env.value:.2f}")
+                    self.logger.log_eval(step, datetime, r, self.env.value)
                 self.metrics.write()

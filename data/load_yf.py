@@ -12,6 +12,7 @@ from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
 from pyrate_limiter import Duration, RequestRate, Limiter
 
 from config.base import DATA_DIR
+from util.logger import TrainingLogger
 
 class LoadYF:
     '''Class to fetch asset data from Yahoo Finance'''
@@ -35,7 +36,7 @@ class LoadYF:
     def _download_data(self) -> None:
         '''Separate tickers into existing and new based on data directory'''
         for i, ticker in enumerate(self.tickers):
-            print(f'{"Fetching Data: ":<25}{i:>5} / {len(self.tickers):<5} | {i/len(self.tickers)*100:.2f}%', end='\r')
+            TrainingLogger.progress_logger("Fetching Data", i, len(self.tickers))
             file_path = os.path.join(DATA_DIR, f"{ticker}.csv")
             if os.path.exists(file_path):
                 df = pd.read_csv(file_path, index_col='Date')   # Load data from csv
@@ -49,7 +50,7 @@ class LoadYF:
                                         end=last_trading_date + pd.Timedelta(days=1),
                                         repair=True, progress=False, rounding=True, session=self.session)
                     if not new_data.empty:
-                        new_data = new_data[['open', 'high', 'low', 'close', 'volume']]
+                        new_data = new_data[['Open', 'High', 'Low', 'Close', 'Volume']]
                         new_data.to_csv(file_path, mode='a', header=False)  # Append to csv
                         df = pd.concat([df, new_data])                      # Add new data to the dataframe
                 self.data[ticker] = df                                      # Add to the dictionary
@@ -60,10 +61,9 @@ class LoadYF:
                 if not df.empty:
                     df.index = pd.to_datetime(df.index)
                     df = df.droplevel("Ticker", axis=1) if 'Ticker' in df.columns.names else df
-                    df = df[['open', 'high', 'low', 'close', 'volume']]
+                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                     df.to_csv(file_path)        # Save to csv
                     self.data[ticker] = df      # Add to the dictionary
-        print()
 
     def _get_last_trading_date(self) -> pd.Timestamp:
         '''Get the last trading date from the NYSE calendar'''

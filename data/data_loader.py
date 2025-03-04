@@ -1,112 +1,104 @@
 import os
 from util.util import get_index_tickers
 from data.load_yf import LoadYF
-from data.asset_pool import AssetPool
-from config.base import LOAD_LOCAL, PICKLE_DIR, TICKERS, MIN_VOLUME, SCALER, TRAIN_RATIO, WINDOW_SIZE, NUM_ASSETS, INDICATORS
+from data.instrument_pool import InstrumentPool
+from torch.utils.data import DataLoader
+from util.logger import TrainingLogger
+from config.base import LOAD_LOCAL, PICKLE_DIR, TARGETS, CONTEXT, MIN_VOLUME, SCALER, TRAIN_RATIO, WINDOW_SIZE, NUM_ASSETS, INDICATORS
 
 class StockDataLoader:
-    def __init__(self):
-        self.pool = None                # Stock data class
-        self.train_dl = None            # Training data loader
-        self.test_dl = None             # Testing data loader
-        self.info = None                # Information about the data
+    pool: InstrumentPool    # Stock data class
+    train_dl: DataLoader    # Training data loader
+    test_dl: DataLoader     # Testing data loader
+    info: dict              # Information about the data
+
+    def __init__(self, logger: TrainingLogger):
+        self.logger = logger
+        self.logger.format_banner("PREPARING DATA")
 
         # Load the tickers and stock data
-        print("-"*50)
         if LOAD_LOCAL and os.path.exists(PICKLE_DIR + "asset_pool.pkl"):
-            print("Loading Asset Pool...", end='\r')
-            self.pool = AssetPool.load(PICKLE_DIR, "asset_pool")
-            print("Loading Asset Pool... Done!")
+            self.pool = self.logger.is_done_wrapper("Loading Asset Pool", InstrumentPool.load, PICKLE_DIR, "asset_pool")
         else:
-            print("Fetching Tickers...", end='\r')
-            tickers = get_index_tickers(TICKERS, ['HUBB'])
-            print("Fetching Tickers... Done!")
+            tickers = self.logger.is_done_wrapper("Fetching Tickers", get_index_tickers, TARGETS, ['HUBB'])
 
-            print("Fetching Stock Data...", end='\r')
-            asset_data = LoadYF(tickers.keys())
-            data = asset_data.get_data()
-            print("Fetching Stock Data... Done!")
-
-            self.pool = AssetPool.from_data(tickers, data)
+            targets_data = LoadYF(tickers.keys()).get_data()
+            context_data = LoadYF(CONTEXT).get_data()
+            self.pool = InstrumentPool.from_data(targets_data, context_data)
  
             if LOAD_LOCAL and not os.path.exists(PICKLE_DIR + "asset_pool.pkl"):
-                print("Saving Asset Pool...", end='\r')
-                self.pool.save(PICKLE_DIR, "asset_pool")
-                print("Saving Asset Pool... Done!")
-        print("-"*50)
+                self.logger.is_done_wrapper("Saving Asset Pool", self.pool.save, PICKLE_DIR, "asset_pool")
 
-        print("Adding Indicators...", end='\r')
-        self.pool.add_indicators(INDICATORS)
-        print("Adding Indicators... Done!")
+        # Remove tickers with insufficient data
+        for ticker in self.pool.target_tickers:
+            if len(self.pool.targets[ticker]) < 12000:
+                del self.pool.targets[ticker]
 
-        print("Making Data Stationary...", end='\r')
-        self.pool.stationary(pickle_dir=PICKLE_DIR, printout=True)
-        print("Making Data Stationary... Done!")
-
-        print("Picking Assets...", end='\r')
-        # Filter tickers with insufficient average volume
-        for ticker, volume in self.pool.volume().items():
-            if volume.mean() < MIN_VOLUME:
-                del self.pool[ticker]
-
-        # Choose tickers with the most data
-        lengths = {t: len(self.pool[t]) for t in self.pool.tickers}
-        lowest_tickers = sorted(lengths.keys(), key=lambda x: lengths[x])[:len(lengths)-NUM_ASSETS]
-        for ticker in lowest_tickers:
-            tickers = self.pool.tickers
-            del self.pool[ticker]
-        print("Picking Assets... Done!")
-
-        print("Splitting Data...", end='\r')
-        train_pool, test_pool = self.pool.split(TRAIN_RATIO)
-        print("Splitting Data... Done!")
-
-        print("Scaling Data...", end='\r')
-        train_pool.scale(SCALER)
-        test_pool.scale(SCALER)
-        print("Scaling Data... Done!")
-
-        print("Windowing Data...", end='\r')
-        train_pool.window(WINDOW_SIZE)
-        test_pool.window(WINDOW_SIZE)
-        print("Windowing Data... Done!")
-
-        print("Creating Dataloaders...", end='\r')
-        self.train_dl = train_pool.get_loader()
-        self.test_dl = test_pool.get_loader()
-        print("Creating Dataloaders... Done!")
+        self.logger.is_done_wrapper("Adding Indicators", self.pool.add_indicators, INDICATORS)
+        self.pool.stationary(pickle_dir=PICKLE_DIR, log=True)
+        self.logger.is_done_wrapper("Filtering Assets", self._filter_assets, self.pool, MIN_VOLUME, NUM_ASSETS)
+        train_pool, test_pool = self.logger.is_done_wrapper("Splitting Data", self.pool.split, TRAIN_RATIO)
+        self.logger.is_done_wrapper("Scaling Data", self._scale, train_pool, test_pool, SCALER)
+        self.logger.is_done_wrapper("Windowing Data", self._window, train_pool, test_pool, WINDOW_SIZE)
+        self.train_dl, self.test_dl = self.logger.is_done_wrapper("Building DataLoaders", self._build_dataloaders, train_pool, test_pool)
 
         self.info = {
-            "num_assets": len(self.pool),
-            "tickers": self.pool.tickers,
-            "num_features": len(self.pool.features),
+            "n_targets": len(self.pool.target_tickers),
+            "n_context": len(self.pool.context_tickers),
+            "n_features": len(self.pool.features),
+            "len_train": len(train_pool.datetimes),
+            "len_test": len(test_pool),
+            "targets": self.pool.target_tickers,
+            "context": self.pool.context_tickers,
             "features": self.pool.features,
-            "train_len": len(train_pool),
             "train_dates": train_pool.datetimes,
-            "train_prices": train_pool.prices,
-            "test_len": len(test_pool),
             "test_dates": test_pool.datetimes,
-            "test_prices": test_pool.prices
         }
-        print("-"*50)
+
+    @staticmethod
+    def _filter_assets(pool, min_volume, num_assets):
+        # Filter tickers with insufficient average volume
+        for ticker, volume in pool.volume()['targets'].items():
+            if volume.mean() < min_volume:
+                del pool.targets[ticker]
+
+        # Choose tickers with the most data
+        lengths = {t: len(pool.targets[t]) for t in pool.target_tickers}
+        lowest_tickers = sorted(lengths.keys(), key=lambda x: lengths[x])[:len(lengths)-num_assets]
+        for ticker in lowest_tickers:
+            del pool.targets[ticker]
+
+    @staticmethod
+    def _scale(train_pool, test_pool, scaler):
+        train_pool.scale(scaler)
+        test_pool.scale(scaler)
+
+    @staticmethod
+    def _window(train_pool, test_pool, window_size):
+        train_pool.window(window_size)
+        test_pool.window(window_size)
+
+    @staticmethod
+    def _build_dataloaders(train_pool, test_pool):
+        return train_pool.get_loader(), test_pool.get_loader()
 
     @property
-    def num_assets(self): return self.info["num_assets"]
+    def n_targets(self): return self.info["n_targets"]
     @property
-    def tickers(self): return self.info["tickers"]
+    def n_context(self): return self.info["n_context"]
     @property
-    def num_features(self): return self.info["num_features"]
+    def n_features(self): return self.info["n_features"]
+    @property
+    def len_train(self): return self.info["len_train"]
+    @property
+    def len_test(self): return self.info["len_test"]
+    @property
+    def targets(self): return self.info["targets"]
+    @property
+    def context(self): return self.info["context"]
     @property
     def features(self): return self.info["features"]
     @property
-    def train_len(self): return self.info["train_len"]
-    @property
     def train_dates(self): return self.info["train_dates"]
     @property
-    def train_prices(self): return self.info["train_prices"]
-    @property
-    def test_len(self): return self.info["test_len"]
-    @property
     def test_dates(self): return self.info["test_dates"]
-    @property
-    def test_prices(self): return self.info["test_prices"]    
